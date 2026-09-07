@@ -1,0 +1,6 @@
+{
+  "name": "Stacked. | Premium Burger Experience",
+  "description": "Flame grilled. Built fresh. Impossible to ignore. Experience the ultimate 3D interactive burger menu.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

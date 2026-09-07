@@ -1,0 +1,48 @@
+@import "tailwindcss";
+
+@theme {
+  --color-warm-cream: #F6EBDD;
+  --color-charcoal: #17120F;
+  --color-tomato-red: #C83D25;
+  --color-flame-orange: #F28C28;
+  --color-cheddar-yellow: #FFB627;
+  --color-fresh-green: #486B3C;
+  --color-deep-sauce: #76251B;
+  --color-dark-text: #211713;
+}
+
+@layer base {
+  html, body, #root {
+    width: 100%;
+    max-width: 100%;
+    overflow-x: hidden;
+  }
+}
+
+@layer base {
+  body {
+    background-color: var(--color-charcoal);
+    color: var(--color-warm-cream);
+    overflow-x: hidden;
+  }
+}
+
+html.lenis {
+  height: auto;
+}
+
+.lenis.lenis-smooth {
+  scroll-behavior: auto;
+}
+
+.lenis.lenis-smooth [data-lenis-prevent] {
+  overscroll-behavior: contain;
+}
+
+.lenis.lenis-stopped {
+  overflow: hidden;
+}
+
+.lenis.lenis-scrolling iframe {
+  pointer-events: none;
+}

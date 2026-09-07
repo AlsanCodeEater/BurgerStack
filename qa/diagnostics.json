@@ -1,0 +1,74 @@
+[
+  {
+    "name": "smoke-hero.png",
+    "diag": {
+      "url": "http://127.0.0.1:3000/",
+      "viewport": {
+        "width": 1440,
+        "height": 900
+      },
+      "canvasRect": {
+        "x": 0,
+        "y": 80,
+        "width": 1440,
+        "height": 820,
+        "top": 80,
+        "right": 1440,
+        "bottom": 900,
+        "left": 0
+      },
+      "canvasWidth": 1440,
+      "canvasHeight": 820,
+      "devicePixelRatio": 1,
+      "fontStatus": "loaded"
+    }
+  },
+  {
+    "name": "smoke-explosion.png",
+    "diag": {
+      "url": "http://127.0.0.1:3000/",
+      "viewport": {
+        "width": 1440,
+        "height": 900
+      },
+      "canvasRect": {
+        "x": 0,
+        "y": 80,
+        "width": 1440,
+        "height": 820,
+        "top": 80,
+        "right": 1440,
+        "bottom": 900,
+        "left": 0
+      },
+      "canvasWidth": 1440,
+      "canvasHeight": 820,
+      "devicePixelRatio": 1,
+      "fontStatus": "loaded"
+    }
+  },
+  {
+    "name": "smoke-final.png",
+    "diag": {
+      "url": "http://127.0.0.1:3000/",
+      "viewport": {
+        "width": 1440,
+        "height": 900
+      },
+      "canvasRect": {
+        "x": 0,
+        "y": 80,
+        "width": 1440,
+        "height": 820,
+        "top": 80,
+        "right": 1440,
+        "bottom": 900,
+        "left": 0
+      },
+      "canvasWidth": 1440,
+      "canvasHeight": 820,
+      "devicePixelRatio": 1,
+      "fontStatus": "loaded"
+    }
+  }
+]
