@@ -1,410 +1,483 @@
-import React, { useEffect, useRef, useState, useLayoutEffect, useCallback } from "react";
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import * as THREE from 'three';
-import { Canvas, useThree, useFrame } from "@react-three/fiber";
-import { Environment, ContactShadows } from "@react-three/drei";
-import gsap from "gsap";
-import { ScrollTrigger } from "gsap/ScrollTrigger";
-import { GLBBurgerModel, GLBBurgerModelRef } from "./3d/GLBBurgerModel";
-import { BURGER_LAYERS, BurgerLayer, LayerName, STORY_PHASES, getLayerSegment } from "../data/burgerLayers";
+import { Canvas } from '@react-three/fiber';
+import { Environment } from '@react-three/drei';
+import gsap from 'gsap';
+import { ScrollTrigger } from 'gsap/ScrollTrigger';
+import {
+  BURGER_STORY_PHASES,
+  GLBBurgerModel,
+  getStoryLayerTiming,
+} from './3d/GLBBurgerModel';
+import { BurgerLayer, LayerName } from '../data/burgerLayers';
+import { ErrorBoundary } from './ErrorBoundary';
 
 gsap.registerPlugin(ScrollTrigger);
 
-class ErrorBoundary extends React.Component<{ children: React.ReactNode }, { hasError: boolean }> {
-  constructor(props: { children: React.ReactNode }) {
-    super(props);
-    this.state = { hasError: false };
-  }
-  static getDerivedStateFromError() { return { hasError: true }; }
-  render() {
-    if (this.state.hasError) return <div className="text-red-500">Error loading 3D scene.</div>;
-    return this.props.children;
-  }
+const NAV_HEIGHT = 80;
+const PIN_SCROLL_SCREENS = 6.2;
+
+type ScreenPosition = { x: number; y: number; r: number };
+
+function rangeProgress(progress: number, start: number, end: number) {
+  if (end <= start) return progress >= end ? 1 : 0;
+  return THREE.MathUtils.clamp((progress - start) / (end - start), 0, 1);
 }
 
-const Scene = ({ onReady, activeLayer, onPositionsUpdate, onResolvedLayers }: { onReady: () => void, activeLayer: LayerName | null, onPositionsUpdate: (positions: Record<string, {x: number, y: number, r: number}>) => void, onResolvedLayers: (layers: BurgerLayer[]) => void }) => {
-  const burgerRef = useRef<GLBBurgerModelRef>(null);
-  const groupRef = useRef<THREE.Group>(null);
-  const { viewport, mouse } = useThree();
-  const scrollProgressRef = useRef(0);
+function getPhase(progress: number) {
+  if (progress < BURGER_STORY_PHASES.HERO_END) return 'HERO';
+  if (progress < BURGER_STORY_PHASES.CENTERING_END) return 'CENTERING';
+  if (progress < BURGER_STORY_PHASES.CENTER_HOLD_END) return 'CENTER HOLD';
+  if (progress < BURGER_STORY_PHASES.EXPLOSION_END) return 'EXPLOSION';
+  if (progress < BURGER_STORY_PHASES.CROSSOVER_END) return 'EXPLODED HOLD';
+  if (progress < BURGER_STORY_PHASES.REBUILD_END) return 'REBUILD';
+  if (progress < BURGER_STORY_PHASES.FINAL_SETTLE_END) return 'FINAL SETTLE';
+  return 'FINAL';
+}
 
-  useEffect(() => {
-    onReady();
-  }, [onReady]);
+const StoryScene = ({
+  progressRef,
+  activeLayer,
+  onPositionsUpdate,
+  onResolvedLayers,
+}: {
+  progressRef: React.MutableRefObject<number>;
+  activeLayer: LayerName | null;
+  onPositionsUpdate: (positions: Record<string, ScreenPosition>) => void;
+  onResolvedLayers: (layers: BurgerLayer[]) => void;
+}) => (
+  <>
+    <GLBBurgerModel
+      mode="story"
+      progressRef={progressRef}
+      enableIdleAnimation
+      activeLayer={activeLayer}
+      onPositionsUpdate={onPositionsUpdate}
+      onResolvedLayers={onResolvedLayers}
+    />
+    <Environment preset="city" environmentIntensity={0.56} />
+    <spotLight position={[7, 6, 6]} angle={0.5} penumbra={1} intensity={2.4} color="#ffd6b3" />
+    <directionalLight position={[-5, 3, 3]} intensity={0.75} color="#e9f3ff" />
+    <spotLight position={[0, 5, -7]} angle={0.8} penumbra={1} intensity={2.6} color="#ff9b38" />
+    <ambientLight intensity={0.34} color="#ffe8d2" />
+  </>
+);
 
-  useEffect(() => {
-    let trigger: globalThis.ScrollTrigger | null = null;
-    let overrideProgress: number | null = null;
-    
-    trigger = ScrollTrigger.create({
-      trigger: "#scroll-container",
-      start: "top top",
-      end: "bottom bottom",
-      scrub: 1,
-      onUpdate: (self) => {
-        if (overrideProgress === null) {
-          scrollProgressRef.current = self.progress;
-        }
-      },
-    });
-    
-    scrollProgressRef.current = 0;
-    setTimeout(() => {
-      ScrollTrigger.refresh();
-      if (trigger && trigger.progress && overrideProgress === null) {
-        scrollProgressRef.current = trigger.progress;
+export const HeroAndExploded = () => {
+  const sectionRef = useRef<HTMLElement>(null);
+  const pinnedStageRef = useRef<HTMLDivElement>(null);
+  const safeStageRef = useRef<HTMLDivElement>(null);
+  const triggerRef = useRef<ScrollTrigger | null>(null);
+
+  const progressRef = useRef(0);
+  const debugOverrideRef = useRef<number | null>(null);
+
+  const [resolvedLayers, setResolvedLayers] = useState<BurgerLayer[]>([]);
+  const [activeLayer, setActiveLayer] = useState<LayerName | null>(null);
+  const [debugProgress, setDebugProgress] = useState(0);
+
+  const heroRef = useRef<HTMLDivElement>(null);
+  const containerRefs = useRef<Record<string, HTMLButtonElement | null>>({});
+  const textRefs = useRef<Record<string, HTMLDivElement | null>>({});
+  const pathRefs = useRef<Record<string, SVGPathElement | null>>({});
+  const dotRefs = useRef<Record<string, SVGCircleElement | null>>({});
+
+  const sortedLayers = useMemo(
+    () => [...resolvedLayers].sort((a, b) => a.index - b.index),
+    [resolvedLayers],
+  );
+
+  const updateOverlay = useCallback((progress: number) => {
+    if (heroRef.current) {
+      const fadeT = rangeProgress(progress, 0.055, BURGER_STORY_PHASES.CENTERING_END);
+      heroRef.current.style.opacity = String(1 - fadeT);
+      heroRef.current.style.visibility = fadeT >= 0.999 ? 'hidden' : 'visible';
+      heroRef.current.style.transform =
+        `translate(-50%, -50%) translateY(${-24 * fadeT}px) scale(${THREE.MathUtils.lerp(1, 0.985, fadeT)})`;
+    }
+
+    sortedLayers.forEach((layer, index) => {
+      const timing = getStoryLayerTiming(index, sortedLayers.length);
+      const lineT = rangeProgress(progress, timing.lineStart, timing.lineStart + 0.010);
+      const textT = rangeProgress(progress, timing.textStart, timing.textStart + 0.012);
+
+      const container = containerRefs.current[layer.key];
+      const dot = dotRefs.current[layer.key];
+      const path = pathRefs.current[layer.key];
+      const text = textRefs.current[layer.key];
+
+      if (container) container.style.visibility = lineT > 0.001 ? 'visible' : 'hidden';
+      if (dot) {
+        dot.style.opacity = lineT > 0 ? '1' : '0';
+        dot.style.transform = `scale(${Math.max(0.01, lineT)})`;
+        dot.style.transformOrigin = 'center';
       }
-    }, 100);
+      if (path) {
+        path.style.opacity = lineT > 0 ? '1' : '0';
+        path.style.strokeDashoffset = String(100 - lineT * 100);
+      }
+      if (text) {
+        text.style.opacity = String(textT);
+        const slide = (1 - textT) * (layer.align === 'left' ? 14 : -14);
+        text.style.transform = `translateX(${slide}px)`;
+      }
+    });
+  }, [sortedLayers]);
+
+  useEffect(() => {
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') setActiveLayer(null);
+    };
+    window.addEventListener('keydown', onKeyDown);
+    return () => window.removeEventListener('keydown', onKeyDown);
+  }, []);
+
+  // IMPORTANT: use ScrollTrigger pinning rather than CSS sticky.
+  // The previous build showed the progress changing while the visual stage
+  // physically scrolled off-screen. This happens when an ancestor creates an
+  // overflow/transform containing block that breaks position: sticky.
+  useEffect(() => {
+    const section = sectionRef.current;
+    const stage = pinnedStageRef.current;
+    if (!section || !stage) return;
+
+    const applyProgress = (rawProgress: number) => {
+      const p = debugOverrideRef.current ?? THREE.MathUtils.clamp(rawProgress, 0, 1);
+      progressRef.current = p;
+      updateOverlay(p);
+      if (import.meta.env.DEV) setDebugProgress(p);
+    };
+
+    const ctx = gsap.context(() => {
+      const trigger = ScrollTrigger.create({
+        trigger: section,
+        start: 'top top',
+        end: () => `+=${Math.round(window.innerHeight * PIN_SCROLL_SCREENS)}`,
+        pin: stage,
+        pinSpacing: true,
+        pinReparent: true,
+        anticipatePin: 1,
+        invalidateOnRefresh: true,
+        scrub: 0.65,
+        onUpdate: (self) => applyProgress(self.progress),
+        onRefresh: (self) => applyProgress(self.progress),
+      });
+
+      triggerRef.current = trigger;
+      applyProgress(trigger.progress);
+    }, section);
 
     if (import.meta.env.DEV) {
       (window as any).__BURGER_DEBUG__ = {
-        setProgress: (value: number) => {
-          overrideProgress = value;
-          scrollProgressRef.current = value;
-          const st = ScrollTrigger.getAll().find(t => t.trigger?.id === 'scroll-container');
-          if (st && st.animation) {
-             st.animation.progress(value);
-          }
-          (window as any).__BURGER_DEBUG__.isInstant = true;
-          setTimeout(() => { (window as any).__BURGER_DEBUG__.isInstant = false; }, 50);
+        setProgress(value: number) {
+          const p = THREE.MathUtils.clamp(Number(value) || 0, 0, 1);
+          debugOverrideRef.current = p;
+          progressRef.current = p;
+          updateOverlay(p);
+          setDebugProgress(p);
         },
-        getProgress: () => scrollProgressRef.current,
-        releaseProgress: () => { overrideProgress = null; }
+        jumpTo(value: number) {
+          const p = THREE.MathUtils.clamp(Number(value) || 0, 0, 1);
+          debugOverrideRef.current = null;
+          const trigger = triggerRef.current;
+          if (trigger) {
+            const y = trigger.start + (trigger.end - trigger.start) * p;
+            window.scrollTo({ top: y, behavior: 'auto' });
+            progressRef.current = p;
+            updateOverlay(p);
+            setDebugProgress(p);
+          }
+        },
+        clearProgressOverride() {
+          debugOverrideRef.current = null;
+          const p = triggerRef.current?.progress ?? 0;
+          progressRef.current = p;
+          updateOverlay(p);
+          setDebugProgress(p);
+        },
+        getProgress() {
+          return progressRef.current;
+        },
+        getPhase() {
+          return getPhase(progressRef.current);
+        },
+        getPinState() {
+          const rect = pinnedStageRef.current?.getBoundingClientRect();
+          return {
+            progress: progressRef.current,
+            phase: getPhase(progressRef.current),
+            stageRect: rect ? {
+              top: rect.top,
+              bottom: rect.bottom,
+              left: rect.left,
+              right: rect.right,
+              width: rect.width,
+              height: rect.height,
+            } : null,
+            triggerStart: triggerRef.current?.start,
+            triggerEnd: triggerRef.current?.end,
+            triggerActive: triggerRef.current?.isActive,
+          };
+        },
       };
     }
 
-    return () => { 
-      if (trigger) trigger.kill(); 
-      if (import.meta.env.DEV) {
-        delete (window as any).__BURGER_DEBUG__;
-      }
+    const refresh = () => ScrollTrigger.refresh();
+    const timer = window.setTimeout(refresh, 250);
+    window.addEventListener('resize', refresh);
+
+    return () => {
+      window.clearTimeout(timer);
+      window.removeEventListener('resize', refresh);
+      triggerRef.current = null;
+      ctx.revert();
+      if (import.meta.env.DEV) delete (window as any).__BURGER_DEBUG__;
     };
-  }, []);
+  }, [updateOverlay]);
 
-  useFrame(() => {
-    if (groupRef.current) {
-      const scrollY = window.scrollY;
-      const progress = scrollProgressRef.current;
-      
-      // PresentationRoot handles its own Y offset now.
-
-      if (scrollY < window.innerHeight) {
-        const targetX = (mouse.x * viewport.width) / 100;
-        const targetYRot = (mouse.y * viewport.height) / 100;
-        
-        groupRef.current.rotation.y = THREE.MathUtils.lerp(groupRef.current.rotation.y, targetX, 0.05);
-        groupRef.current.rotation.x = THREE.MathUtils.lerp(groupRef.current.rotation.x, -targetYRot, 0.05);
-      } else {
-        groupRef.current.rotation.y = THREE.MathUtils.lerp(groupRef.current.rotation.y, 0, 0.05);
-        groupRef.current.rotation.x = THREE.MathUtils.lerp(groupRef.current.rotation.x, 0, 0.05);
-      }
-    }
-
-    if (burgerRef.current?.setScrollProgress) {
-      burgerRef.current.setScrollProgress(scrollProgressRef.current);
-    }
-  });
-
-  return (
-    <group ref={groupRef} position={[0, 0, 0]}>
-      <GLBBurgerModel 
-        ref={burgerRef}
-        enableIdleAnimation={true}
-        activeLayer={activeLayer}
-        onPositionsUpdate={onPositionsUpdate}
-        onResolvedLayers={onResolvedLayers}
-      />
-      <ContactShadows position={[0, -2.5, 0]} opacity={0.7} scale={10} blur={2.5} far={4} resolution={1024} color="#2d1306" />
-      <Environment preset="city" environmentIntensity={0.6} />
-      <spotLight position={[8, 6, 5]} angle={0.5} penumbra={1} intensity={2.5} color="#ffd8b8" castShadow shadow-mapSize-width={2048} shadow-mapSize-height={2048} shadow-bias={-0.0001} />
-      <directionalLight position={[-5, 3, 2]} intensity={0.8} color="#e6f2ff" />
-      <spotLight position={[0, 4, -8]} angle={0.8} penumbra={1} intensity={3.0} color="#ffaa00" />
-      <ambientLight intensity={0.3} color="#ffe6cc" />
-    </group>
-  );
-};
-
-export const HeroAndExploded = () => {
-  const sectionRef = useRef<HTMLDivElement>(null);
-  const [isReady, setIsReady] = useState(false);
-  const [resolvedLayers, setResolvedLayers] = useState<BurgerLayer[]>([]);
-  
-  const [activeLayer, setActiveLayer] = useState<LayerName | null>(null);
-
+  // When the GLB has resolved, recalculate pin geometry after React has painted.
   useEffect(() => {
-    const handleKeyDown = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') setActiveLayer(null);
+    if (!resolvedLayers.length) return;
+    const id = requestAnimationFrame(() => ScrollTrigger.refresh());
+    return () => cancelAnimationFrame(id);
+  }, [resolvedLayers.length]);
+
+  const onPositionsUpdate = useCallback((positions: Record<string, ScreenPosition>) => {
+    const stage = safeStageRef.current;
+    if (!stage || sortedLayers.length === 0) return;
+
+    const width = stage.clientWidth;
+    const height = stage.clientHeight;
+    if (!width || !height) return;
+
+    type Item = {
+      layer: BurgerLayer;
+      projectedX: number;
+      projectedY: number;
+      labelY: number;
+      radius: number;
     };
-    window.addEventListener('keydown', handleKeyDown);
-    return () => window.removeEventListener('keydown', handleKeyDown);
-  }, []);
 
-  const heroContentRef = useRef<HTMLDivElement>(null);
-  const reassemblyTextRef = useRef<HTMLDivElement>(null);
-  
-  const textRefs = useRef<Record<LayerName, HTMLDivElement | null>>({} as any);
-  const containerRefs = useRef<Record<LayerName, HTMLDivElement | null>>({} as any);
-  const pathRefs = useRef<Record<LayerName, SVGPathElement | null>>({} as any);
-  const dotRefs = useRef<Record<LayerName, SVGCircleElement | null>>({} as any);
+    const left: Item[] = [];
+    const right: Item[] = [];
 
-  useLayoutEffect(() => {
-    if (!sectionRef.current || !isReady || resolvedLayers.length === 0) return;
-
-    const ctx = gsap.context(() => {
-      const tl = gsap.timeline({
-        scrollTrigger: {
-          trigger: sectionRef.current,
-          start: "top top",
-          end: "bottom bottom",
-          scrub: 1.2
-        }
-      });
-      
-      if (heroContentRef.current) {
-        tl.to(heroContentRef.current, {
-          opacity: 0,
-          y: -100,
-          duration: STORY_PHASES.EXPLOSION_START,
-          ease: "power2.inOut"
-        }, 0);
-      }
-      
-      resolvedLayers.forEach(layer => {
-        const { end } = getLayerSegment(layer.index);
-        const labelStart = end + 0.01;
-        
-        if (dotRefs.current[layer.key]) {
-          tl.to(dotRefs.current[layer.key], {
-            opacity: 1, scale: 1, duration: 0.01, ease: "none"
-          }, labelStart);
-        }
-        
-        if (pathRefs.current[layer.key]) {
-          tl.to(pathRefs.current[layer.key], {
-            strokeDashoffset: 0, duration: 0.03, ease: "power2.out"
-          }, labelStart + 0.01);
-        }
-        
-        if (textRefs.current[layer.key]) {
-          tl.to(textRefs.current[layer.key], {
-            opacity: 1, x: 0, duration: 0.03, ease: "power2.out"
-          }, labelStart + 0.03);
-        }
-      });
-
-      if (reassemblyTextRef.current) {
-        tl.fromTo(reassemblyTextRef.current, 
-          { opacity: 0, y: 100 },
-          { opacity: 1, y: 0, duration: 0.05, ease: "power2.out" },
-          STORY_PHASES.SHOWCASE_END
-        );
-      }
-    });
-
-    return () => { ctx.revert(); };
-  }, [isReady, resolvedLayers]);
-
-  const onPositionsUpdate = useCallback((positions: Record<string, {x: number, y: number, r: number}>) => {
-    if (resolvedLayers.length === 0) return;
-
-    const leftItems: { layer: LayerName, projX: number, projY: number, labelY: number, r: number }[] = [];
-    const rightItems: { layer: LayerName, projX: number, projY: number, labelY: number, r: number }[] = [];
-    
-    resolvedLayers.forEach(layer => {
+    sortedLayers.forEach((layer) => {
       const pos = positions[layer.key];
       if (!pos || !Number.isFinite(pos.x) || !Number.isFinite(pos.y)) return;
-      
-      const item = { layer: layer.key, projX: pos.x, projY: pos.y, labelY: pos.y, r: pos.r };
-      if (layer.align === "left") leftItems.push(item);
-      else rightItems.push(item);
+      const item: Item = {
+        layer,
+        projectedX: pos.x,
+        projectedY: pos.y,
+        labelY: pos.y,
+        radius: pos.r,
+      };
+      (layer.align === 'left' ? left : right).push(item);
     });
 
-    const viewportHeight = window.innerHeight;
-    const viewportWidth = window.innerWidth;
-    const isMobile = viewportWidth < 768;
+    const safeTop = 26;
+    const safeBottom = height - 28;
+    const spacing = width < 768 ? 46 : 58;
 
-    const NAV_HEIGHT = 80;
-    const SAFE_TOP = 24; // Canvas already starts below navbar
-    const SAFE_BOTTOM = viewportHeight - NAV_HEIGHT - 32;
-    const SPACING = 58;
+    const solve = (items: Item[]) => {
+      items.sort((a, b) => a.projectedY - b.projectedY);
+      let cursor = safeTop;
 
-    const solve = (items: typeof leftItems) => {
-      items.sort((a, b) => a.projY - b.projY);
-      let currentY = SAFE_TOP;
-      
-      items.forEach(item => {
-        if (item.labelY < currentY) item.labelY = currentY;
-        currentY = item.labelY + SPACING;
+      items.forEach((item) => {
+        item.labelY = Math.max(item.projectedY, cursor);
+        cursor = item.labelY + spacing;
       });
-      
-      const overflow = currentY - SPACING - SAFE_BOTTOM;
-      if (overflow > 0) {
-        items.forEach(item => item.labelY -= overflow);
-        currentY = SAFE_TOP;
-        items.forEach(item => {
-           if (item.labelY < currentY) item.labelY = currentY;
-           currentY = item.labelY + SPACING;
+
+      if (items.length) {
+        const overflow = items[items.length - 1].labelY - safeBottom;
+        if (overflow > 0) items.forEach((item) => (item.labelY -= overflow));
+
+        cursor = safeTop;
+        items.forEach((item) => {
+          item.labelY = Math.max(item.labelY, cursor);
+          cursor = item.labelY + spacing;
         });
       }
     };
-    
-    solve(leftItems);
-    solve(rightItems);
 
-    const allItems = [...leftItems, ...rightItems];
-    const padding = viewportWidth < 768 ? 10 : 30;
-    const labelWidth = viewportWidth < 480 ? 100 : viewportWidth < 768 ? 140 : viewportWidth < 1024 ? 200 : 250;
+    solve(left);
+    solve(right);
 
-    allItems.forEach(item => {
-      const { layer, projX, projY, labelY, r } = item;
-      const config = resolvedLayers.find(l => l.key === layer)!;
-      const isLeft = config.align === "left";
+    const edge = width < 768 ? 10 : 28;
 
-      const containerEl = containerRefs.current[layer];
-      const actualLabelWidth = containerEl ? containerEl.offsetWidth : (viewportWidth < 768 ? 120 : 250);
-      
-      const labelX = isLeft ? padding : viewportWidth - padding - actualLabelWidth;
-      
-      if (containerEl) {
-        containerEl.style.transform = `translate(${labelX}px, ${labelY}px) translateY(-50%)`;
+    [...left, ...right].forEach((item) => {
+      const isLeft = item.layer.align === 'left';
+      const container = containerRefs.current[item.layer.key];
+      const path = pathRefs.current[item.layer.key];
+      const dot = dotRefs.current[item.layer.key];
+
+      const labelWidth = container?.offsetWidth ?? (width < 768 ? 120 : 220);
+      const labelX = isLeft ? edge : width - edge - labelWidth;
+
+      if (container) {
+        container.style.transform = `translate(${labelX}px, ${item.labelY}px) translateY(-50%)`;
       }
 
-      const pathEl = pathRefs.current[layer];
-      if (pathEl) {
-        const offsetRadius = r * 0.85; 
-        const startX = projX + (isLeft ? -offsetRadius : offsetRadius);
-        const startY = projY;
+      const startX = item.projectedX + (isLeft ? -item.radius * 0.74 : item.radius * 0.74);
+      const startY = item.projectedY;
+      const targetX = isLeft ? labelX + labelWidth + 10 : labelX - 10;
+      const elbowA = startX + (isLeft ? -24 : 24);
+      const elbowB = targetX + (isLeft ? 20 : -20);
 
-        const targetLabelX = isLeft ? labelX + actualLabelWidth + 10 : labelX - 10;
-        const hopX = startX + (isLeft ? -20 : 20);
-        const hopY = startY;
-        const slopeX = targetLabelX + (isLeft ? 20 : -20);
-        const slopeY = labelY;
-
-        const d = `M ${startX} ${startY} L ${hopX} ${hopY} L ${slopeX} ${slopeY} L ${targetLabelX} ${labelY}`;
-        pathEl.setAttribute("d", d);
+      if (path) {
+        path.setAttribute(
+          'd',
+          `M ${startX} ${startY} L ${elbowA} ${startY} L ${elbowB} ${item.labelY} L ${targetX} ${item.labelY}`,
+        );
       }
-
-      const dotEl = dotRefs.current[layer];
-      if (dotEl) {
-        const offsetRadius = r * 0.85; 
-        const startX = projX + (isLeft ? -offsetRadius : offsetRadius);
-        dotEl.setAttribute("cx", String(startX));
-        dotEl.setAttribute("cy", String(projY));
+      if (dot) {
+        dot.setAttribute('cx', String(startX));
+        dot.setAttribute('cy', String(startY));
       }
     });
-  }, [resolvedLayers]);
+  }, [sortedLayers]);
 
   return (
-    <div ref={sectionRef} id="scroll-container" className="relative w-full h-[3000px] md:h-[4000px] lg:h-[5000px] z-0">
-      <div 
-        className="sticky top-0 w-full h-[100dvh] overflow-hidden cursor-default"
+    <section
+      ref={sectionRef}
+      id="scroll-container"
+      className="relative w-full bg-charcoal"
+    >
+      <div
+        ref={pinnedStageRef}
+        className="relative h-[100dvh] w-full overflow-hidden bg-charcoal"
         onClick={() => setActiveLayer(null)}
       >
-        
-        {/* SAFE AREA FOR 3D AND OVERLAYS */}
-        <div className="absolute left-0 right-0 bottom-0" style={{ top: '80px' }}>
-          
-        <div className="absolute inset-0 flex items-center justify-center pointer-events-none z-0">
-          <div className="w-[100%] h-[100%] max-w-[800px] max-h-[800px] bg-gradient-to-r from-tomato-red/10 to-transparent rounded-full blur-[120px] opacity-30"></div>
-        </div>
+        <div
+          ref={safeStageRef}
+          className="absolute bottom-0 left-0 right-0 overflow-hidden"
+          style={{ top: `${NAV_HEIGHT}px` }}
+        >
+          <div className="pointer-events-none absolute inset-0 z-0 flex items-center justify-center">
+            <div className="h-[76%] w-[66%] max-w-[880px] rounded-full bg-gradient-to-r from-tomato-red/10 to-transparent opacity-25 blur-[120px]" />
+          </div>
 
-        <div className="absolute inset-0 z-10">
-          <ErrorBoundary>
-            <Canvas shadows camera={{ position: [0, 0, 12], fov: 35 }} dpr={[1, 1.5]} gl={{ alpha: true, antialias: true }}>
-              <Scene 
-                onReady={() => setIsReady(true)} 
-                activeLayer={activeLayer} 
-                onPositionsUpdate={onPositionsUpdate} 
-                onResolvedLayers={setResolvedLayers}
-              />
-            </Canvas>
-          </ErrorBoundary>
-        </div>
+          <div className="absolute inset-0 z-10">
+            <ErrorBoundary>
+              <Canvas
+                shadows
+                camera={{ position: [0, 0, 11.7], fov: 35 }}
+                dpr={[1, 1.5]}
+                gl={{ alpha: true, antialias: true }}
+              >
+                <StoryScene
+                  progressRef={progressRef}
+                  activeLayer={activeLayer}
+                  onPositionsUpdate={onPositionsUpdate}
+                  onResolvedLayers={setResolvedLayers}
+                />
+              </Canvas>
+            </ErrorBoundary>
+          </div>
 
-        <div ref={heroContentRef} className="absolute left-1/2 top-[75%] md:top-[68%] -translate-x-1/2 -translate-y-1/2 w-[min(92vw,900px)] text-center pointer-events-none z-20">
-          <div className="relative text-center">
-            <h1 className="text-[clamp(3.5rem,10vw,7.5rem)] font-black uppercase tracking-tighter leading-[0.8] text-white mx-auto">
+          <div
+            ref={heroRef}
+            className="pointer-events-none absolute z-20 w-[min(92vw,900px)] text-center"
+            style={{
+              left: '50%',
+              top: '72%',
+              transform: 'translate(-50%, -50%)',
+              willChange: 'opacity, transform',
+            }}
+          >
+            <h1 className="mx-auto text-[clamp(3.3rem,8vw,7rem)] font-black uppercase leading-[0.8] tracking-tighter text-white">
               <span className="block drop-shadow-2xl">STACKED</span>
-              <span className="block text-transparent bg-clip-text bg-gradient-to-b from-flame-orange to-[#b33c00] drop-shadow-lg">DIFFERENT.</span>
+              <span className="block bg-gradient-to-b from-flame-orange to-[#b33c00] bg-clip-text text-transparent drop-shadow-lg">
+                DIFFERENT.
+              </span>
             </h1>
-            <div className="mt-8">
-              <p className="text-warm-cream text-lg md:text-xl font-bold tracking-wide uppercase">
-                FLAME GRILLED & SMASHED FRESH
+            <div className="mt-7">
+              <p className="text-base font-bold uppercase tracking-wide text-warm-cream md:text-xl">
+                FLAME GRILLED &amp; SMASHED FRESH
               </p>
-              <p className="text-warm-cream/80 text-sm md:text-base mt-2 max-w-md mx-auto">
+              <p className="mx-auto mt-2 max-w-md text-sm leading-relaxed text-warm-cream/75 md:text-base">
                 Every layer crafted for maximum flavor. Quality ingredients stacked to perfection.
               </p>
-              <div className="mt-8 flex gap-6 justify-center text-sm font-bold tracking-widest text-flame-orange">
-                <span>EXPLORE LAYERS &darr;</span>
-                <span>VIEW MENU &rarr;</span>
+              <div className="mt-7 flex justify-center gap-7 text-xs font-bold tracking-widest text-flame-orange md:text-sm">
+                <span>EXPLORE LAYERS ↓</span>
+                <a href="#menu" className="pointer-events-auto hover:text-warm-cream">VIEW MENU →</a>
               </div>
             </div>
           </div>
-        </div>
 
-        <div ref={reassemblyTextRef} className="absolute bottom-8 left-0 right-0 flex flex-col items-center justify-center opacity-0 pointer-events-none z-20 text-warm-cream">
-          <h2 className="text-3xl md:text-5xl leading-[0.9] font-black italic tracking-tighter text-center">
-            THAT'S ONE BURGER.<br />
-            <span className="text-flame-orange opacity-90">NOW MEET THE FAMILY.</span>
-          </h2>
-        </div>
+          <svg
+            className="pointer-events-none absolute inset-0 z-30"
+            width="100%"
+            height="100%"
+            style={{ overflow: 'visible' }}
+          >
+            {sortedLayers.map((layer) => (
+              <g key={layer.key}>
+                <circle
+                  ref={(el) => { dotRefs.current[layer.key] = el; }}
+                  r={2.5}
+                  className="fill-flame-orange"
+                  style={{ opacity: 0 }}
+                />
+                <path
+                  ref={(el) => { pathRefs.current[layer.key] = el; }}
+                  fill="none"
+                  strokeWidth="1.7"
+                  pathLength="100"
+                  strokeDasharray="100"
+                  strokeDashoffset="100"
+                  className="stroke-flame-orange"
+                  style={{ opacity: 0 }}
+                />
+              </g>
+            ))}
+          </svg>
 
-        <svg className="absolute inset-0 pointer-events-none z-30" width="100%" height="100%" style={{ overflow: "visible" }}>
-          {resolvedLayers.map(layer => (
-            <g key={layer.key}>
-              <circle
-                ref={el => dotRefs.current[layer.key] = el}
-                r={2}
-                className="opacity-0 transition-colors duration-300 fill-flame-orange"
-              />
-              <path
-                ref={el => pathRefs.current[layer.key] = el}
-                fill="none"
-                strokeWidth="1.5"
-                pathLength="100"
-                strokeDasharray="100"
-                strokeDashoffset="100"
-                className="transition-colors duration-300 stroke-warm-cream/30"
-              />
-            </g>
-          ))}
-        </svg>
-
-        <div className="absolute inset-0 pointer-events-none z-40">
-          {resolvedLayers.map(layer => {
-            const isLeft = layer.align === "left";
-            const isActive = activeLayer === layer.key;
-            
-            return (
-              <div 
-                key={layer.key}
-                ref={el => containerRefs.current[layer.key] = el}
-                onClick={(e) => {
-                  e.stopPropagation();
-                  setActiveLayer(isActive ? null : layer.key);
-                }}
-                className={`absolute top-0 left-0 w-[100px] min-[480px]:w-[120px] md:w-[160px] lg:w-[200px] xl:w-[250px] pointer-events-auto group flex flex-col justify-center cursor-pointer ${isLeft ? "items-end text-right" : "items-start text-left"}`}
-                style={{ willChange: "transform" }}
-              >
-                <div 
-                  ref={el => textRefs.current[layer.key] = el} 
-                  className={`opacity-0 transition-all duration-300 ${isLeft ? "origin-right" : "origin-left"} group-hover:scale-105 ${isActive ? "scale-110" : ""}`}
-                  style={{ transform: `translateX(${isLeft ? "16px" : "-16px"})` }}
+          <div className="pointer-events-none absolute inset-0 z-40">
+            {sortedLayers.map((layer) => {
+              const isLeft = layer.align === 'left';
+              const isActive = activeLayer === layer.key;
+              return (
+                <button
+                  type="button"
+                  key={layer.key}
+                  ref={(el) => { containerRefs.current[layer.key] = el; }}
+                  onClick={(event) => {
+                    event.stopPropagation();
+                    setActiveLayer(isActive ? null : layer.key);
+                  }}
+                  className={
+                    `pointer-events-auto absolute left-0 top-0 w-[120px] bg-transparent p-0 md:w-[180px] lg:w-[220px] ` +
+                    (isLeft ? 'text-right' : 'text-left')
+                  }
+                  style={{ visibility: 'hidden', willChange: 'transform' }}
                 >
-                  <div className={`text-[10px] md:text-[12px] uppercase tracking-[0.18em] mb-1 font-bold leading-tight transition-colors duration-300 ${isActive ? "text-white" : "text-flame-orange"} group-hover:text-white`}>
-                    {layer.title}
+                  <div
+                    ref={(el) => { textRefs.current[layer.key] = el; }}
+                    style={{ opacity: 0 }}
+                    className="transition-transform duration-200 hover:scale-[1.03]"
+                  >
+                    <div className={`mb-1 text-[11px] font-black uppercase leading-tight tracking-[0.18em] md:text-[12px] ${isActive ? 'text-white' : 'text-flame-orange'}`}>
+                      {layer.title}
+                    </div>
+                    <div className={`text-[9px] font-semibold uppercase leading-tight tracking-wide md:text-[10px] ${isActive ? 'text-white' : 'text-warm-cream/75'}`}>
+                      {layer.description}
+                    </div>
                   </div>
-                  <div className={`text-[9px] md:text-[10px] uppercase font-semibold tracking-wide leading-tight transition-opacity duration-300 ${isActive ? "opacity-100 text-white" : "opacity-75 text-warm-cream"}`}>
-                    {layer.description}
-                  </div>
-                </div>
-              </div>
-            );
-          })}
-        </div>
-        </div>
+                </button>
+              );
+            })}
+          </div>
 
+          {import.meta.env.DEV && (
+            <div className="pointer-events-none absolute bottom-3 right-3 z-[60] rounded bg-black/55 px-3 py-2 font-mono text-[10px] text-warm-cream/70">
+              <div>burger story: {debugProgress.toFixed(3)}</div>
+              <div>{getPhase(debugProgress)}</div>
+              <div>layers: {sortedLayers.length}</div>
+              <div>PIN: ScrollTrigger</div>
+            </div>
+          )}
+        </div>
       </div>
-    </div>
+    </section>
   );
 };

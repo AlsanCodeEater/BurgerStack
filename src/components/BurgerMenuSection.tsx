@@ -1,307 +1,443 @@
-import React, { useState, useRef, useEffect } from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { Canvas, useFrame } from '@react-three/fiber';
-import { Environment, ContactShadows } from '@react-three/drei';
+import { ContactShadows, Environment } from '@react-three/drei';
 import { gsap } from 'gsap';
-import { GLBBurgerModel, GLBBurgerModelRef } from './3d/GLBBurgerModel';
+import * as THREE from 'three';
+import { Check, Flame, Minus, Plus } from 'lucide-react';
+import { GLBBurgerModel } from './3d/GLBBurgerModel';
 import { burgers } from '../data/burgers';
 import { BurgerData } from '../types';
-import { Plus, Minus, Flame, Check } from 'lucide-react';
-import * as THREE from 'three';
 import { ErrorBoundary } from './ErrorBoundary';
 
-const MenuScene = ({ 
-  activeBurger, 
-  hoverAngle 
-}: { 
-  activeBurger: BurgerData, 
-  hoverAngle: number | null 
-}) => {
-  const burgerRef = useRef<GLBBurgerModelRef>(null);
-  const groupRef = useRef<THREE.Group>(null);
-  const prevBurgerId = useRef(activeBurger.id);
+const MenuScene = ({ activeBurger }: { activeBurger: BurgerData }) => {
+  // interactionRef is ONLY click-selection rotation/scale.
+  const interactionRef = useRef<THREE.Group>(null);
+  // hoverRef is ONLY tiny idle motion.
+  const hoverRef = useRef<THREE.Group>(null);
+  const previousIndexRef = useRef(
+    Math.max(0, burgers.findIndex((burger) => burger.id === activeBurger.id)),
+  );
 
-  // Animate on variation change
   useEffect(() => {
-    if (groupRef.current && prevBurgerId.current !== activeBurger.id) {
-      // A quick celebratory spin/bounce when changing the active burger
-      gsap.fromTo(groupRef.current.scale, 
-        { x: 0.8, y: 1.2, z: 0.8 }, 
-        { x: 1, y: 1, z: 1, duration: 0.8, ease: "elastic.out(1, 0.3)" }
+    const root = interactionRef.current;
+    if (!root) return;
+
+    const nextIndex = Math.max(
+      0,
+      burgers.findIndex((burger) => burger.id === activeBurger.id),
+    );
+    const previousIndex = previousIndexRef.current;
+
+    if (nextIndex === previousIndex) return;
+
+    const direction = nextIndex > previousIndex ? 1 : -1;
+
+    gsap.killTweensOf(root.rotation);
+    gsap.killTweensOf(root.scale);
+
+    const timeline = gsap.timeline();
+    timeline
+      .to(
+        root.rotation,
+        {
+          y: root.rotation.y + direction * 1.05,
+          duration: 0.45,
+          ease: 'power3.inOut',
+        },
+        0,
+      )
+      .to(
+        root.scale,
+        {
+          x: 0.80,
+          y: 0.80,
+          z: 0.80,
+          duration: 0.25,
+          ease: 'power2.in',
+        },
+        0,
+      )
+      .to(
+        root.scale,
+        {
+          x: 1,
+          y: 1,
+          z: 1,
+          duration: 0.45,
+          ease: 'back.out(1.8)',
+        },
+        0.25,
       );
-      gsap.fromTo(groupRef.current.rotation,
-        { y: groupRef.current.rotation.y - Math.PI },
-        { y: groupRef.current.rotation.y, duration: 0.8, ease: "power2.out" }
-      );
-      prevBurgerId.current = activeBurger.id;
-    }
+
+    previousIndexRef.current = nextIndex;
+
+    return () => {
+      timeline.kill();
+    };
   }, [activeBurger.id]);
 
   useFrame((state) => {
-    if (!groupRef.current) return;
-    const t = state.clock.getElapsedTime();
-    
-    // Base hover
-    let targetRotY = Math.sin(t * 0.5) * 0.05;
-    
-    // Turn towards hovered item
-    if (hoverAngle !== null) {
-      targetRotY = hoverAngle;
-    }
-    
-    groupRef.current.rotation.y = THREE.MathUtils.lerp(groupRef.current.rotation.y, targetRotY, 0.05);
+    const hover = hoverRef.current;
+    if (!hover) return;
+
+    const elapsed = state.clock.getElapsedTime();
+    hover.position.y = Math.sin(elapsed * 0.58) * 0.035;
+    hover.rotation.y = Math.sin(elapsed * 0.28) * 0.025;
+    hover.rotation.z = Math.cos(elapsed * 0.4) * 0.006;
   });
 
   return (
-    <group ref={groupRef} position={[0, -0.35, 0]}>
-      <GLBBurgerModel 
-        ref={burgerRef}
-        enableIdleAnimation={false}
-        mode="configurator"
+    <group ref={interactionRef}>
+      <group ref={hoverRef}>
+        <GLBBurgerModel
+          enableIdleAnimation={false}
+          mode="configurator"
+          scale={2.15}
+        />
+      </group>
+
+      <ContactShadows
+        position={[0, -2.25, 0]}
+        opacity={0.6}
+        scale={8}
+        blur={2.5}
+        far={4}
+        resolution={1024}
+        color="#2d1306"
       />
-      <ContactShadows position={[0, -1.8, 0]} opacity={0.7} scale={10} blur={2.5} far={4} resolution={1024} color="#2d1306" />
-      <Environment preset="city" environmentIntensity={0.6} />
-      <spotLight 
-        position={[8, 6, 5]} 
-        angle={0.5} 
-        penumbra={1} 
-        intensity={2.5} 
-        color="#ffd8b8" 
-        castShadow 
-        shadow-mapSize-width={2048} 
-        shadow-mapSize-height={2048} 
-        shadow-bias={-0.0001}
+      <Environment preset="city" environmentIntensity={0.58} />
+      <spotLight
+        position={[7, 6, 5]}
+        angle={0.5}
+        penumbra={1}
+        intensity={2.3}
+        color="#ffd8b8"
       />
-      <directionalLight position={[-5, 3, 2]} intensity={0.8} color="#e6f2ff" />
-      <spotLight 
-        position={[0, 4, -8]} 
-        angle={0.8} 
-        penumbra={1} 
-        intensity={3.0} 
-        color="#ffaa00" 
+      <directionalLight
+        position={[-5, 3, 2]}
+        intensity={0.75}
+        color="#e6f2ff"
+      />
+      <spotLight
+        position={[0, 4, -8]}
+        angle={0.8}
+        penumbra={1}
+        intensity={2.6}
+        color="#ffaa00"
       />
       <ambientLight intensity={0.3} color="#ffe6cc" />
     </group>
   );
 };
 
-export const BurgerMenuSection = () => {
-  const [activeBurgerId, setActiveBurgerId] = useState<string>(burgers[0].id);
-  const [hoveredBurgerId, setHoveredBurgerId] = useState<string | null>(null);
-
-  const activeBurger = burgers.find(b => b.id === activeBurgerId) || burgers[0];
-
-  // Calculate angles for 6 items (3 left, 3 right)
-  const leftItems = burgers.slice(0, 3);
-  const rightItems = burgers.slice(3, 6);
-
-  const handleBurgerSelect = (id: string) => {
-    setActiveBurgerId(id);
-  };
-
-  // Calculate rotation angle towards the hovered or active item
-  const getHoverAngle = () => {
-    const targetId = hoveredBurgerId || activeBurgerId;
-    const isLeft = leftItems.find(b => b.id === targetId);
-    return isLeft ? -Math.PI / 8 : Math.PI / 8;
-  };
-
-  return (
-    <section id="menu" className="relative w-full min-h-screen bg-charcoal overflow-hidden py-12 md:py-24 flex flex-col justify-center">
-      
-      {/* Background ambient lighting */}
-      <div className="absolute inset-0 flex items-center justify-center pointer-events-none z-0">
-        <div className="w-[800px] h-[800px] bg-gradient-to-r from-tomato-red/5 to-transparent rounded-full blur-[120px] opacity-20"></div>
-      </div>
-
-      {/* 3D Canvas */}
-      <div className="absolute inset-0 z-0 pointer-events-none">
-        <ErrorBoundary>
-          <Canvas 
-            shadows 
-            camera={{ position: [0, 0, 16], fov: 35 }}
-            dpr={[1, 1.5]}
-          >
-            <MenuScene activeBurger={activeBurger} hoverAngle={getHoverAngle()} />
-          </Canvas>
-        </ErrorBoundary>
-      </div>
-
-      {/* Header */}
-      <div className="relative z-10 w-full text-center mb-8 pointer-events-none h-[120px] flex flex-col justify-center">
-        <h2 className="text-[clamp(0.75rem,2vw,0.875rem)] font-bold tracking-[0.4em] uppercase text-warm-cream/40 mb-4">Select Variation</h2>
-        <div className="text-[clamp(2.5rem,5vw,3.5rem)] font-black italic tracking-tighter text-warm-cream">THE <span className="text-flame-orange">CONFIGURATOR</span></div>
-      </div>
-
-      {/* HTML Menu Overlay */}
-      <div className="relative z-10 w-full flex-1 max-w-[1500px] mx-auto px-4 md:px-8 flex flex-col md:grid md:grid-cols-2 lg:grid-cols-[minmax(300px,1fr)_minmax(460px,620px)_minmax(300px,1fr)] gap-6 lg:items-center pointer-events-none">
-        
-        {/* Mobile/Tablet Spacer for 3D Burger */}
-        <div className="lg:hidden w-full md:col-span-2 h-[35vh] min-h-[300px] pointer-events-none"></div>
-
-        {/* Left Column (or Mobile Top) */}
-        <div className="flex flex-col w-full space-y-4 md:space-y-6">
-          {leftItems.map((burger) => (
-            <MenuItem 
-              key={burger.id} 
-              burger={burger} 
-              align="left"
-              isSelected={activeBurgerId === burger.id}
-              onHover={() => setHoveredBurgerId(burger.id)}
-              onLeave={() => setHoveredBurgerId(null)}
-              onClick={() => handleBurgerSelect(burger.id)}
-            />
-          ))}
-        </div>
-
-        {/* Center spacing for burger (Desktop) */}
-        <div className="hidden lg:block w-full h-full pointer-events-none"></div>
-
-        {/* Right Column (or Mobile Bottom) */}
-        <div className="flex flex-col w-full space-y-4 md:space-y-6 md:mt-0 lg:items-end">
-          {rightItems.map((burger) => (
-            <MenuItem 
-              key={burger.id} 
-              burger={burger} 
-              align="right"
-              isSelected={activeBurgerId === burger.id}
-              onHover={() => setHoveredBurgerId(burger.id)}
-              onLeave={() => setHoveredBurgerId(null)}
-              onClick={() => handleBurgerSelect(burger.id)}
-            />
-          ))}
-        </div>
-      </div>
-    </section>
-  );
-};
-
-const MenuItem = ({ 
-  burger, 
-  align, 
-  isSelected,
-  onHover, 
-  onLeave, 
-  onClick 
-}: { 
-  burger: BurgerData, 
-  align: 'left' | 'right',
-  isSelected: boolean,
-  onHover: () => void,
-  onLeave: () => void,
-  onClick: () => void,
+const BurgerDetails = ({
+  burger,
+  quantity,
+  setQuantity,
+  side,
+}: {
+  burger: BurgerData;
+  quantity: number;
+  setQuantity: React.Dispatch<React.SetStateAction<number>>;
+  side: 'left' | 'right';
 }) => {
-  const [quantity, setQuantity] = useState(1);
+  const detailsRef = useRef<HTMLDivElement>(null);
+  const [added, setAdded] = useState(false);
 
-  // Reset quantity when deselected
   useEffect(() => {
-    if (!isSelected) {
-      setQuantity(1);
-    }
-  }, [isSelected]);
+    const element = detailsRef.current;
+    if (!element) return;
+
+    gsap.fromTo(
+      element,
+      { opacity: 0, y: 10 },
+      { opacity: 1, y: 0, duration: 0.35, ease: 'power2.out' },
+    );
+  }, [burger.id]);
+
+  useEffect(() => {
+    setAdded(false);
+  }, [burger.id]);
 
   return (
-    <div 
-      className={`group pointer-events-auto cursor-pointer w-full transition-all duration-500 flex flex-col ${align === 'right' ? 'md:items-end md:text-right items-start text-left' : 'items-start text-left'}`}
-      onMouseEnter={onHover}
-      onMouseLeave={onLeave}
-      onClick={() => {
-        if (!isSelected) onClick();
-      }}
+    <div
+      ref={detailsRef}
+      className={
+        `mt-5 border-t border-warm-cream/10 pt-5 ` +
+        (side === 'right' ? 'text-right' : 'text-left')
+      }
     >
-      {/* Title & Connector Line Area */}
-      <div className={`flex items-center gap-4 w-full ${align === 'right' ? 'md:flex-row-reverse flex-row' : 'flex-row'} ${isSelected ? 'opacity-100' : 'opacity-40 hover:opacity-100'}`}>
-        <div className={`hidden md:block flex-1 transition-all duration-500 h-[1px] ${isSelected ? 'bg-flame-orange' : 'bg-warm-cream/20 group-hover:bg-warm-cream/40'}`}></div>
-        <h4 className={`text-xl md:text-2xl font-bold tracking-widest uppercase transition-colors ${isSelected ? 'text-flame-orange' : 'text-warm-cream'}`}>
-          {burger.name}
-        </h4>
-        {isSelected && (
-          <div className="w-2 h-2 rounded-full bg-flame-orange shadow-[0_0_10px_rgba(255,85,0,0.8)]"></div>
+      <div className="text-3xl font-black italic text-cheddar-yellow">
+        ${burger.price.toFixed(2)}
+      </div>
+
+      <p
+        className={
+          `mt-3 max-w-[340px] text-xs leading-relaxed text-warm-cream/65 ` +
+          (side === 'right' ? 'ml-auto' : '')
+        }
+      >
+        {burger.description}
+      </p>
+
+      <div
+        className={
+          `mt-4 flex flex-wrap gap-2 ` +
+          (side === 'right' ? 'justify-end' : 'justify-start')
+        }
+      >
+        <span className="rounded-full border border-warm-cream/20 px-3 py-1 text-[9px] font-bold uppercase tracking-widest text-warm-cream/75">
+          {burger.calories} KCAL
+        </span>
+        {burger.modelVariant.pattyCount > 1 && (
+          <span className="rounded-full border border-warm-cream/20 px-3 py-1 text-[9px] font-bold uppercase tracking-widest text-warm-cream/75">
+            DOUBLE BEEF
+          </span>
+        )}
+        {burger.spiceLevel !== 'None' && (
+          <span className="flex items-center rounded-full border border-tomato-red/30 bg-tomato-red/10 px-3 py-1 text-[9px] font-bold uppercase tracking-widest text-tomato-red">
+            <Flame size={11} className="mr-1" />
+            {burger.spiceLevel}
+          </span>
         )}
       </div>
 
-      {/* Expandable Details Container */}
-      <div 
-        className={`grid transition-all duration-500 ease-in-out w-full max-w-sm`}
-        style={{ gridTemplateRows: isSelected ? '1fr' : '0fr' }}
+      <div className="mt-5">
+        <div className="text-[9px] font-bold uppercase tracking-[0.2em] text-warm-cream/35">
+          Ingredients
+        </div>
+        <p className="mt-2 text-[11px] font-bold uppercase leading-relaxed tracking-wide text-warm-cream/90">
+          {burger.ingredients}
+        </p>
+      </div>
+
+      <div
+        className={
+          `mt-5 flex flex-wrap items-center gap-3 ` +
+          (side === 'right' ? 'justify-end' : 'justify-start')
+        }
       >
-        <div className="overflow-hidden">
-          <div className={`pt-6 pb-2 ${align === 'right' ? 'md:pl-6 pr-6 md:pr-0' : 'pr-6'}`}>
-            
-            <div className={`flex items-center gap-4 mb-4 ${align === 'right' ? 'md:justify-end justify-start' : 'justify-start'}`}>
-              <span className="font-black italic text-cheddar-yellow text-3xl">${burger.price.toFixed(2)}</span>
-            </div>
+        <div className="flex items-center rounded-full border border-warm-cream/20 px-2 py-1.5">
+          <button
+            type="button"
+            onClick={() => setQuantity((value) => Math.max(1, value - 1))}
+            className="flex h-8 w-8 items-center justify-center rounded-full text-warm-cream transition-colors hover:bg-warm-cream/10"
+          >
+            <Minus size={13} />
+          </button>
+          <span className="w-7 text-center text-sm font-bold text-warm-cream">
+            {quantity}
+          </span>
+          <button
+            type="button"
+            onClick={() => setQuantity((value) => value + 1)}
+            className="flex h-8 w-8 items-center justify-center rounded-full text-warm-cream transition-colors hover:bg-warm-cream/10"
+          >
+            <Plus size={13} />
+          </button>
+        </div>
 
-            <p className="text-warm-cream/60 text-xs leading-relaxed mb-6">
-              {burger.description}
-            </p>
-            
-            <div className={`flex flex-wrap gap-2 mb-6 ${align === 'right' ? 'md:justify-end justify-start' : 'justify-start'}`}>
-              <span className="px-3 py-1 border border-warm-cream/20 rounded-full text-[9px] font-bold tracking-widest text-warm-cream/80 uppercase">
-                {burger.calories} KCAL
-              </span>
-              {burger.modelVariant.pattyCount > 1 && (
-                <span className="px-3 py-1 border border-warm-cream/20 rounded-full text-[9px] font-bold tracking-widest text-warm-cream/80 uppercase">
-                  DOUBLE BEEF
-                </span>
-              )}
-              {burger.spiceLevel !== 'None' && (
-                <span className="px-3 py-1 border border-tomato-red/30 bg-tomato-red/10 rounded-full text-[9px] font-bold tracking-widest text-tomato-red uppercase flex items-center">
-                  <Flame size={10} className="mr-1" /> {burger.spiceLevel}
-                </span>
-              )}
-            </div>
+        <button
+          type="button"
+          onClick={() => {
+            setAdded(true);
+            window.setTimeout(() => setAdded(false), 1400);
+          }}
+          className={
+            `flex min-w-[170px] items-center justify-center gap-2 rounded-full px-5 py-3 text-[10px] font-bold uppercase tracking-widest text-warm-cream transition-all ` +
+            (added
+              ? 'bg-green-600'
+              : 'bg-flame-orange hover:bg-tomato-red')
+          }
+        >
+          <Check size={14} />
+          {added
+            ? 'ADDED'
+            : `ADD - $${(burger.price * quantity).toFixed(2)}`}
+        </button>
+      </div>
+    </div>
+  );
+};
 
-            <div className="mb-6">
-              <div className="text-[9px] uppercase tracking-[0.2em] text-warm-cream/40 font-bold mb-2">Ingredients</div>
-              <p className="text-warm-cream text-xs font-bold uppercase tracking-wider">{burger.ingredients}</p>
-            </div>
+const MenuOption = ({
+  burger,
+  active,
+  side,
+  onSelect,
+  quantity,
+  setQuantity,
+}: {
+  burger: BurgerData;
+  active: boolean;
+  side: 'left' | 'right';
+  onSelect: (id: string) => void;
+  quantity: number;
+  setQuantity: React.Dispatch<React.SetStateAction<number>>;
+}) => {
+  const isLeft = side === 'left';
 
-            <div className={`flex items-center gap-4 mt-8 flex-wrap ${align === 'right' ? 'md:flex-row-reverse flex-row' : 'flex-row'}`}>
-              {/* Quantity Selector */}
-              <div 
-                className="flex items-center space-x-3 border border-warm-cream/20 rounded-full px-2 py-1"
-                onClick={(e) => e.stopPropagation()}
+  return (
+    <div className="w-full">
+      <button
+        type="button"
+        onClick={() => onSelect(burger.id)}
+        className={
+          `group flex w-full items-center gap-4 py-2 ` +
+          (isLeft ? 'justify-start text-left' : 'justify-end text-right')
+        }
+      >
+        {!isLeft && (
+          <span
+            className={
+              `h-px flex-1 transition-colors duration-300 ` +
+              (active
+                ? 'bg-flame-orange'
+                : 'bg-warm-cream/10 group-hover:bg-warm-cream/30')
+            }
+          />
+        )}
+
+        {isLeft && (
+          <span
+            className={
+              `h-2 w-2 shrink-0 rounded-full transition-all duration-300 ` +
+              (active
+                ? 'scale-100 bg-flame-orange shadow-[0_0_10px_rgba(255,85,0,0.8)]'
+                : 'scale-0 bg-transparent')
+            }
+          />
+        )}
+
+        <span
+          className={
+            `whitespace-nowrap text-xl font-bold uppercase tracking-widest transition-colors duration-300 xl:text-2xl ` +
+            (active
+              ? 'text-flame-orange'
+              : 'text-warm-cream/40 group-hover:text-warm-cream')
+          }
+        >
+          {burger.name}
+        </span>
+
+        {isLeft && (
+          <span
+            className={
+              `h-px flex-1 transition-colors duration-300 ` +
+              (active
+                ? 'bg-flame-orange'
+                : 'bg-warm-cream/10 group-hover:bg-warm-cream/30')
+            }
+          />
+        )}
+
+        {!isLeft && (
+          <span
+            className={
+              `h-2 w-2 shrink-0 rounded-full transition-all duration-300 ` +
+              (active
+                ? 'scale-100 bg-flame-orange shadow-[0_0_10px_rgba(255,85,0,0.8)]'
+                : 'scale-0 bg-transparent')
+            }
+          />
+        )}
+      </button>
+
+      {active && (
+        <BurgerDetails
+          burger={burger}
+          quantity={quantity}
+          setQuantity={setQuantity}
+          side={side}
+        />
+      )}
+    </div>
+  );
+};
+
+export const BurgerMenuSection = () => {
+  const [activeBurgerId, setActiveBurgerId] = useState(burgers[0].id);
+  const [quantity, setQuantity] = useState(1);
+
+  const activeBurger =
+    burgers.find((burger) => burger.id === activeBurgerId) ?? burgers[0];
+
+  const splitIndex = Math.ceil(burgers.length / 2);
+  const leftBurgers = useMemo(() => burgers.slice(0, splitIndex), [splitIndex]);
+  const rightBurgers = useMemo(() => burgers.slice(splitIndex), [splitIndex]);
+
+  const handleSelect = (id: string) => {
+    if (id === activeBurgerId) return;
+    setActiveBurgerId(id);
+    setQuantity(1);
+  };
+
+  return (
+    <section
+      id="menu"
+      className="relative min-h-screen w-full overflow-hidden bg-charcoal py-20 text-warm-cream"
+    >
+      <div className="pointer-events-none absolute inset-0 z-0 flex items-center justify-center">
+        <div className="h-[700px] w-[700px] rounded-full bg-gradient-to-r from-tomato-red/5 to-transparent opacity-20 blur-[120px]" />
+      </div>
+
+      <div className="relative z-10 mx-auto max-w-[1500px] px-6">
+        <header className="mb-10 text-center">
+          <div className="mb-4 text-xs font-bold uppercase tracking-[0.4em] text-warm-cream/35">
+            Select Variation
+          </div>
+          <h2 className="text-[clamp(2.7rem,5vw,4.4rem)] font-black italic leading-none tracking-tighter text-warm-cream">
+            THE <span className="text-flame-orange">CONFIGURATOR</span>
+          </h2>
+        </header>
+
+        {/*
+          Restored composition:
+          left three variations | independent center burger | right three variations.
+        */}
+        <div className="grid min-h-[620px] grid-cols-1 items-center gap-10 lg:grid-cols-[minmax(300px,420px)_minmax(420px,560px)_minmax(300px,420px)]">
+          <div className="order-2 flex flex-col gap-3 lg:order-1">
+            {leftBurgers.map((burger) => (
+              <MenuOption
+                key={burger.id}
+                burger={burger}
+                active={burger.id === activeBurgerId}
+                side="left"
+                onSelect={handleSelect}
+                quantity={quantity}
+                setQuantity={setQuantity}
+              />
+            ))}
+          </div>
+
+          <div className="order-1 h-[430px] w-full lg:order-2 lg:h-[600px]">
+            <ErrorBoundary>
+              <Canvas
+                shadows
+                camera={{ position: [0, 0, 12.5], fov: 35 }}
+                dpr={[1, 1.5]}
+                gl={{ alpha: true, antialias: true }}
               >
-                <button 
-                  onClick={() => setQuantity(Math.max(1, quantity - 1))}
-                  className="w-6 h-6 flex items-center justify-center rounded-full hover:bg-warm-cream/10 transition-colors text-warm-cream"
-                >
-                  <Minus size={12} />
-                </button>
-                <span className="font-bold text-xs w-3 text-center text-warm-cream">{quantity}</span>
-                <button 
-                  onClick={() => setQuantity(quantity + 1)}
-                  className="w-6 h-6 flex items-center justify-center rounded-full hover:bg-warm-cream/10 transition-colors text-warm-cream"
-                >
-                  <Plus size={12} />
-                </button>
-              </div>
+                <MenuScene activeBurger={activeBurger} />
+              </Canvas>
+            </ErrorBoundary>
+          </div>
 
-              {/* Add to Order CTA */}
-              <button 
-                onClick={(e) => {
-                  e.stopPropagation();
-                  console.log(`Added ${quantity} ${burger.name} to order!`);
-                  const btn = e.currentTarget;
-                  const originalText = btn.innerHTML;
-                  btn.innerHTML = `<svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"></polyline></svg> ADDED TO ORDER`;
-                  btn.classList.add('bg-green-600', 'shadow-[0_0_20px_rgba(22,163,74,0.3)]');
-                  btn.classList.remove('bg-flame-orange', 'shadow-[0_0_20px_rgba(255,85,0,0.3)]');
-                  setTimeout(() => {
-                    btn.innerHTML = originalText;
-                    btn.classList.remove('bg-green-600', 'shadow-[0_0_20px_rgba(22,163,74,0.3)]');
-                    btn.classList.add('bg-flame-orange', 'shadow-[0_0_20px_rgba(255,85,0,0.3)]');
-                  }, 2000);
-                }}
-                className="flex-1 bg-flame-orange text-warm-cream py-3 rounded-full text-xs font-bold tracking-widest uppercase hover:bg-tomato-red transition-colors flex justify-center gap-2 items-center shadow-[0_0_20px_rgba(255,85,0,0.3)] hover:shadow-[0_0_30px_rgba(255,85,0,0.5)]"
-              >
-                <Check size={14} /> ADD TO ORDER - ${(burger.price * quantity).toFixed(2)}
-              </button>
-            </div>
-
+          <div className="order-3 flex flex-col gap-3">
+            {rightBurgers.map((burger) => (
+              <MenuOption
+                key={burger.id}
+                burger={burger}
+                active={burger.id === activeBurgerId}
+                side="right"
+                onSelect={handleSelect}
+                quantity={quantity}
+                setQuantity={setQuantity}
+              />
+            ))}
           </div>
         </div>
       </div>
-    </div>
+    </section>
   );
 };
