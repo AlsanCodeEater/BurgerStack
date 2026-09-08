@@ -32,3 +32,24 @@ export const getStoryLabelWidth = (width: number) => {
   if (width >= BREAKPOINTS.tablet) return 160;
   return 100;
 };
+
+export const screenYToWorldY = (
+  screenY: number,
+  canvasHeight: number,
+  cameraDistance: number,
+  fov: number
+) => {
+  const ndcY = 1 - (screenY / canvasHeight) * 2;
+  const halfVisibleHeight = Math.tan((fov * Math.PI) / 360) * cameraDistance;
+  return ndcY * halfVisibleHeight;
+};
+
+export const calculateCameraDistanceToFit = (
+  size: { x: number; y: number; z: number },
+  fov: number,
+  aspect: number
+) => {
+  const fitHeight = size.y / (2 * Math.tan((fov * Math.PI) / 360));
+  const fitWidth = size.x / (2 * Math.tan((fov * Math.PI) / 360) * aspect);
+  return Math.max(fitHeight, fitWidth) * 1.25;
+};

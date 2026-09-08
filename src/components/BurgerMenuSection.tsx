@@ -52,13 +52,12 @@ const MenuScene = ({
   });
 
   return (
-    <group ref={groupRef} position={[0, -0.35, 0]}>
+    <group ref={groupRef} position={[0, 0, 0]}>
       <GLBBurgerModel 
         ref={burgerRef}
         enableIdleAnimation={false}
         mode="configurator"
       />
-      <ContactShadows position={[0, -1.8, 0]} opacity={0.7} scale={10} blur={2.5} far={4} resolution={1024} color="#2d1306" />
       <Environment preset="city" environmentIntensity={0.6} />
       <spotLight 
         position={[8, 6, 5]} 

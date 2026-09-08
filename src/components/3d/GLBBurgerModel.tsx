@@ -1,9 +1,10 @@
 import React, { forwardRef, useImperativeHandle, useRef, useEffect, useMemo, useState } from 'react';
 import * as THREE from 'three';
 import { useFrame, useThree } from '@react-three/fiber';
-import { useGLTF } from '@react-three/drei';
+import { useGLTF, ContactShadows } from '@react-three/drei';
+import { SkeletonUtils } from 'three-stdlib';
 import { BURGER_LAYERS, BurgerLayer, LayerName, STORY_PHASES, getLayerSegment } from '../../data/burgerLayers';
-import { getResponsiveScale, getExplosionMultiplier } from '../../utils/responsiveConfig';
+import { getResponsiveScale, getExplosionMultiplier, screenYToWorldY, calculateCameraDistanceToFit } from '../../utils/responsiveConfig';
 
 const MODEL_PATH = '/models/burger-final.glb';
 const MODEL_POSITION: [number, number, number] = [0, -0.5, 0];
@@ -12,6 +13,7 @@ const MODEL_ROTATION: [number, number, number] = [0, 0, 0];
 export interface GLBBurgerModelRef {
   presentationGroup: THREE.Group | null;
   setScrollProgress: (p: number) => void;
+  getSnapshot: () => any;
 }
 
 interface GLBBurgerModelProps {
@@ -21,7 +23,7 @@ interface GLBBurgerModelProps {
   url?: string;
   activeLayer?: LayerName | null;
   mode?: 'story' | 'configurator';
-  onPositionsUpdate?: (positions: Record<string, {x: number, y: number, r: number}>) => void;
+  onPositionsUpdate?: (positions: Record<string, {x: number, y: number, r: number}>, progress: number) => void;
   onResolvedLayers?: (layers: BurgerLayer[]) => void;
 }
 
@@ -36,7 +38,7 @@ function easeInOutQuad(t: number) {
 export const GLBBurgerModel = forwardRef<GLBBurgerModelRef, GLBBurgerModelProps>(
   ({ enableIdleAnimation = true, position, scale = 1, url = '/models/burger-final.glb', activeLayer = null, mode = 'story', onPositionsUpdate, onResolvedLayers }, ref) => {
     const { scene } = useGLTF(url);
-    const clonedScene = useMemo(() => scene.clone(), [scene]);
+    const clonedScene = useMemo(() => SkeletonUtils.clone(scene), [scene]);
     const presentationRef = useRef<THREE.Group>(null);
     const floatingRef = useRef<THREE.Group>(null);
     const centeringRef = useRef<THREE.Group>(null);
@@ -51,25 +53,12 @@ export const GLBBurgerModel = forwardRef<GLBBurgerModelRef, GLBBurgerModelProps>
     const isDesktop = canvasWidth >= 1024;
 
     const config = isMobile
-      ? {
-          hero: { scale: 0.975, y: 0.3, cameraZ: 14 },
-          story: { scale: 0.975, y: 0, cameraZ: 14 },
-          configurator: { scale: 0.975, y: -0.35, cameraZ: 14 }
-        }
+      ? { scale: 0.975, cameraZ: 14 }
       : isTablet
-      ? {
-          hero: { scale: 1.275, y: 0, cameraZ: 13 },
-          story: { scale: 1.275, y: 0, cameraZ: 13 },
-          configurator: { scale: 1.275, y: -0.35, cameraZ: 13 }
-        }
-      : {
-          hero: { scale: 1.5, y: -0.35, cameraZ: 12 },
-          story: { scale: 1.5, y: 0, cameraZ: 12 },
-          configurator: { scale: 1.5, y: -0.35, cameraZ: 12 }
-        };
+      ? { scale: 1.275, cameraZ: 13 }
+      : { scale: 1.5, cameraZ: 12 };
 
-    const currentMode = mode === 'configurator' ? config.configurator : (scrollProgressRef.current < 0.1 ? config.hero : config.story);
-    const baseScale = currentMode.scale;
+    const baseScale = config.scale;
 
     const originalTransforms = useRef(new Map<string, { position: THREE.Vector3, quaternion: THREE.Quaternion, scale: THREE.Vector3 }>());
     const resolvedNodes = useRef(new Map<string, THREE.Object3D>());
@@ -130,24 +119,35 @@ export const GLBBurgerModel = forwardRef<GLBBurgerModelRef, GLBBurgerModelProps>
         }
       });
       
+      console.log(`[burger labels] configured: ${BURGER_LAYERS.length} resolved: ${resolvedList.length}`);
+      
       if (onResolvedLayers) {
         onResolvedLayers(resolvedList);
       }
       
-      const currentModelUnitY = box.isEmpty() ? 10 : box.getSize(new THREE.Vector3()).y;
-      const offscreenDistY = currentModelUnitY * 2.5;
+      const assembledBox = box.isEmpty() ? new THREE.Box3(new THREE.Vector3(-1,-1,-1), new THREE.Vector3(1,1,1)) : box;
+      const size = assembledBox.getSize(new THREE.Vector3());
+      const currentModelUnitY = size.y;
+      
+      const distanceToCamera = config.cameraZ; // Approximate
+      const vFov = THREE.MathUtils.degToRad(camera.fov);
+      const visibleHeight = 2 * Math.tan(vFov / 2) * distanceToCamera;
+      const visibleWidth = visibleHeight * viewport.aspect;
       
       resolvedNodes.current.forEach((obj, key) => {
         const orig = originalTransforms.current.get(key);
-        const config = BURGER_LAYERS.find(l => l.key === key);
-        if (orig && config) {
-          const explosionMultiplier = getExplosionMultiplier(canvasWidth);
+        const layerConfig = BURGER_LAYERS.find(l => l.key === key);
+        if (orig && layerConfig) {
           const explosionExit = orig.position.clone();
-          explosionExit.x += config.explosionDir.x * viewport.width * 0.35 * explosionMultiplier;
-          explosionExit.y += config.explosionDir.y * viewport.height * 0.35 * explosionMultiplier;
           
-          const hiddenAbove = explosionExit.clone();
-          hiddenAbove.y += offscreenDistY;
+          const maxDistX = visibleWidth * 0.35;
+          const maxDistY = visibleHeight * 0.25;
+
+          explosionExit.x += layerConfig.explosionDir.x * maxDistX;
+          explosionExit.y += layerConfig.explosionDir.y * maxDistY;
+          
+          const hiddenAbove = orig.position.clone();
+          hiddenAbove.y += Math.min(size.y * 1.5, visibleHeight * 0.4);
           
           animationTargets.current.set(key, { explosionExit, hiddenAbove });
           obj.position.copy(orig.position);
@@ -155,30 +155,36 @@ export const GLBBurgerModel = forwardRef<GLBBurgerModelRef, GLBBurgerModelProps>
           obj.scale.copy(orig.scale);
         }
       });
-    }, [clonedScene, viewport.width, viewport.height, isMobile, onResolvedLayers]);
+    }, [clonedScene, viewport.width, viewport.height, isMobile, onResolvedLayers, camera.fov, config.cameraZ, viewport.aspect]);
 
     useFrame((state) => {
-      // Determine target configuration based on current progress/mode
-      let currentModeConfig = config.story;
+      let targetScreenYPct = 0.5; // Default center
+      let currentCameraZ = config.cameraZ;
+      
       if (mode === 'configurator') {
-        currentModeConfig = config.configurator;
+        targetScreenYPct = 0.55;
+        // In configurator, we'd calculate to fit, but we'll let the user provide a general distance or use the fit logic.
+        const box = new THREE.Box3().setFromObject(clonedScene);
+        if (!box.isEmpty()) {
+            currentCameraZ = calculateCameraDistanceToFit(box.getSize(new THREE.Vector3()), camera.fov, viewport.aspect);
+        }
       } else {
         const p = scrollProgressRef.current;
-        if (p < 0.1) {
-          currentModeConfig = config.hero;
-        } else if (p >= 0.1 && p < 0.2) {
-          const ease = (p - 0.1) / 0.1;
-          currentModeConfig = {
-            ...config.story,
-            y: THREE.MathUtils.lerp(config.hero.y, config.story.y, ease)
-          };
+        if (p < 0.05) {
+          targetScreenYPct = 0.315;
+        } else if (p >= 0.05 && p < 0.10) {
+          const ease = (p - 0.05) / 0.05;
+          targetScreenYPct = THREE.MathUtils.lerp(0.315, 0.5, easeInOutQuad(ease));
+        } else {
+          targetScreenYPct = 0.5;
         }
       }
 
-      // Smoothly adjust camera Z and PresentationRoot Y per breakpoint/mode
-      state.camera.position.z = THREE.MathUtils.lerp(state.camera.position.z, currentModeConfig.cameraZ, 0.05);
+      state.camera.position.z = currentCameraZ;
+      
       if (presentationRef.current) {
-        presentationRef.current.position.y = THREE.MathUtils.lerp(presentationRef.current.position.y, currentModeConfig.y, 0.1);
+        const targetWorldY = screenYToWorldY(targetScreenYPct * canvasHeight, canvasHeight, state.camera.position.z, state.camera.fov);
+        presentationRef.current.position.y = targetWorldY;
       }
 
       const progress = scrollProgressRef.current;
@@ -204,7 +210,9 @@ export const GLBBurgerModel = forwardRef<GLBBurgerModelRef, GLBBurgerModelProps>
              }
           }
 
-          if (progress <= STORY_PHASES.EXPLOSION_START) {
+          if (mode === 'configurator') {
+            targetPos.copy(original.position);
+          } else if (progress <= STORY_PHASES.EXPLOSION_START) {
             targetPos.copy(original.position);
           }
           else if (progress > STORY_PHASES.EXPLOSION_START && progress <= STORY_PHASES.EXPLOSION_END) {
@@ -242,29 +250,19 @@ export const GLBBurgerModel = forwardRef<GLBBurgerModelRef, GLBBurgerModelProps>
             targetPos.y += yOffset;
           }
 
-          if ((window as any).__BURGER_DEBUG__?.isInstant) {
-            obj.position.copy(targetPos);
-            if (activeLayer === config.key && progress > STORY_PHASES.SHOWCASE_END) {
-              const time = state.clock.getElapsedTime();
-              obj.rotation.y = time * 0.5;
-            } else {
-              obj.quaternion.copy(original.quaternion);
-            }
+          obj.position.copy(targetPos);
+          if (activeLayer === config.key && progress > STORY_PHASES.SHOWCASE_END) {
+             const time = state.clock.getElapsedTime();
+             obj.rotation.y = time * 0.5;
           } else {
-            obj.position.lerp(targetPos, 0.12);
-            if (activeLayer === config.key && progress > STORY_PHASES.SHOWCASE_END) {
-               const time = state.clock.getElapsedTime();
-               obj.rotation.y = time * 0.5;
-            } else {
-               obj.quaternion.slerp(original.quaternion, 0.12);
-            }
+             obj.quaternion.copy(original.quaternion);
           }
         }
       });
 
       if (presentationRef.current) {
         let currentScale = 1;
-        if (progress > STORY_PHASES.SHOWCASE_END) {
+        if (mode !== 'configurator' && progress > STORY_PHASES.SHOWCASE_END) {
           const settleP = rangeProgress(progress, STORY_PHASES.SHOWCASE_END, 1.0);
           if (settleP < 0.3) {
             const bounceP = settleP / 0.3;
@@ -282,7 +280,9 @@ export const GLBBurgerModel = forwardRef<GLBBurgerModelRef, GLBBurgerModelProps>
         );
         
         let idleFactor = 1.0;
-        if (progress <= STORY_PHASES.EXPLOSION_START) {
+        if (mode === 'configurator') {
+          idleFactor = 1.0;
+        } else if (progress <= STORY_PHASES.EXPLOSION_START) {
           idleFactor = 1.0;
         } else if (progress > STORY_PHASES.EXPLOSION_START && progress <= STORY_PHASES.SHOWCASE_START) {
           idleFactor = 0.15;
@@ -293,17 +293,9 @@ export const GLBBurgerModel = forwardRef<GLBBurgerModelRef, GLBBurgerModelProps>
         }
 
         if (enableIdleAnimation && typeof window !== 'undefined' && !window.matchMedia('(prefers-reduced-motion: reduce)').matches) {
-          const t = state.clock.getElapsedTime();
-          let targetRotY = MODEL_ROTATION[1] + Math.sin(t * 0.4) * 0.03 * idleFactor;
-          let targetRotZ = MODEL_ROTATION[2] + Math.cos(t * 0.5) * 0.01 * idleFactor;
-          let targetRotX = MODEL_ROTATION[0];
-
-          if (floatingRef.current) {
-            floatingRef.current.position.y = Math.sin(t * 0.6) * 0.1 * idleFactor;
-          }
-          presentationRef.current.rotation.y = THREE.MathUtils.lerp(presentationRef.current.rotation.y, targetRotY, 0.06);
-          presentationRef.current.rotation.x = THREE.MathUtils.lerp(presentationRef.current.rotation.x, targetRotX, 0.06);
-          presentationRef.current.rotation.z = THREE.MathUtils.lerp(presentationRef.current.rotation.z, targetRotZ, 0.06);
+          // Temporarily disabled for deterministic testing
+          if (floatingRef.current) floatingRef.current.position.y = 0;
+          presentationRef.current.rotation.set(...MODEL_ROTATION);
         } else {
           if (floatingRef.current) floatingRef.current.position.y = 0;
           presentationRef.current.rotation.set(...MODEL_ROTATION);
@@ -345,7 +337,7 @@ export const GLBBurgerModel = forwardRef<GLBBurgerModelRef, GLBBurgerModelProps>
             }
           }
         });
-        onPositionsUpdate(positions);
+        onPositionsUpdate(positions, progress);
       }
     });
 
@@ -353,6 +345,18 @@ export const GLBBurgerModel = forwardRef<GLBBurgerModelRef, GLBBurgerModelProps>
       get presentationGroup() { return presentationRef.current; },
       setScrollProgress: (p: number) => {
         scrollProgressRef.current = p;
+      },
+      getSnapshot: () => {
+        const layersSnapshot: Record<string, any> = {};
+        resolvedNodes.current.forEach((obj, key) => {
+          layersSnapshot[key] = {
+            position: obj.position.clone(),
+            quaternion: obj.quaternion.clone(),
+            scale: obj.scale.clone(),
+            visible: obj.visible
+          };
+        });
+        return layersSnapshot;
       }
     }));
 
@@ -368,6 +372,7 @@ export const GLBBurgerModel = forwardRef<GLBBurgerModelRef, GLBBurgerModelProps>
             <primitive object={clonedScene} />
           </group>
         </group>
+        <ContactShadows position={[0, -1.8, 0]} opacity={0.7} scale={10} blur={2.5} far={4} resolution={1024} color="#2d1306" />
       </group>
     );
   }

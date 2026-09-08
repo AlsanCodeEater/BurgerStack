@@ -21,7 +21,7 @@ class ErrorBoundary extends React.Component<{ children: React.ReactNode }, { has
   }
 }
 
-const Scene = ({ onReady, activeLayer, onPositionsUpdate, onResolvedLayers }: { onReady: () => void, activeLayer: LayerName | null, onPositionsUpdate: (positions: Record<string, {x: number, y: number, r: number}>) => void, onResolvedLayers: (layers: BurgerLayer[]) => void }) => {
+const Scene = ({ onReady, activeLayer, onPositionsUpdate, onResolvedLayers }: { onReady: () => void, activeLayer: LayerName | null, onPositionsUpdate: (positions: Record<string, {x: number, y: number, r: number}>, progress: number) => void, onResolvedLayers: (layers: BurgerLayer[]) => void }) => {
   const burgerRef = useRef<GLBBurgerModelRef>(null);
   const groupRef = useRef<THREE.Group>(null);
   const { viewport, mouse } = useThree();
@@ -60,15 +60,40 @@ const Scene = ({ onReady, activeLayer, onPositionsUpdate, onResolvedLayers }: { 
         setProgress: (value: number) => {
           overrideProgress = value;
           scrollProgressRef.current = value;
-          const st = ScrollTrigger.getAll().find(t => t.trigger?.id === 'scroll-container');
-          if (st && st.animation) {
-             st.animation.progress(value);
-          }
           (window as any).__BURGER_DEBUG__.isInstant = true;
           setTimeout(() => { (window as any).__BURGER_DEBUG__.isInstant = false; }, 50);
         },
         getProgress: () => scrollProgressRef.current,
-        releaseProgress: () => { overrideProgress = null; }
+        clearProgressOverride: () => { 
+          overrideProgress = null; 
+          const st = ScrollTrigger.getAll().find(t => t.trigger?.id === 'scroll-container');
+          if (st) {
+             scrollProgressRef.current = st.progress;
+          }
+        },
+        snapshot: () => {
+           const burgerRefInstance = burgerRef.current;
+           if (!burgerRefInstance || !burgerRefInstance.presentationGroup) return null;
+           const root = burgerRefInstance.presentationGroup;
+           
+           // We need access to the resolved layers...
+           const state: any = {
+             progress: scrollProgressRef.current,
+             root: {
+                position: root.position.clone(),
+                quaternion: root.quaternion.clone(),
+                scale: root.scale.clone()
+             },
+             layers: {}
+           };
+           
+           // I'll implement a helper in GLBBurgerModel to grab layer snapshots
+           if (burgerRefInstance.getSnapshot) {
+              state.layers = burgerRefInstance.getSnapshot();
+           }
+           
+           return state;
+        }
       };
     }
 
@@ -113,7 +138,6 @@ const Scene = ({ onReady, activeLayer, onPositionsUpdate, onResolvedLayers }: { 
         onPositionsUpdate={onPositionsUpdate}
         onResolvedLayers={onResolvedLayers}
       />
-      <ContactShadows position={[0, -2.5, 0]} opacity={0.7} scale={10} blur={2.5} far={4} resolution={1024} color="#2d1306" />
       <Environment preset="city" environmentIntensity={0.6} />
       <spotLight position={[8, 6, 5]} angle={0.5} penumbra={1} intensity={2.5} color="#ffd8b8" castShadow shadow-mapSize-width={2048} shadow-mapSize-height={2048} shadow-bias={-0.0001} />
       <directionalLight position={[-5, 3, 2]} intensity={0.8} color="#e6f2ff" />
@@ -146,64 +170,9 @@ export const HeroAndExploded = () => {
   const pathRefs = useRef<Record<LayerName, SVGPathElement | null>>({} as any);
   const dotRefs = useRef<Record<LayerName, SVGCircleElement | null>>({} as any);
 
-  useLayoutEffect(() => {
-    if (!sectionRef.current || !isReady || resolvedLayers.length === 0) return;
 
-    const ctx = gsap.context(() => {
-      const tl = gsap.timeline({
-        scrollTrigger: {
-          trigger: sectionRef.current,
-          start: "top top",
-          end: "bottom bottom",
-          scrub: 1.2
-        }
-      });
-      
-      if (heroContentRef.current) {
-        tl.to(heroContentRef.current, {
-          opacity: 0,
-          y: -100,
-          duration: STORY_PHASES.EXPLOSION_START,
-          ease: "power2.inOut"
-        }, 0);
-      }
-      
-      resolvedLayers.forEach(layer => {
-        const { end } = getLayerSegment(layer.index);
-        const labelStart = end + 0.01;
-        
-        if (dotRefs.current[layer.key]) {
-          tl.to(dotRefs.current[layer.key], {
-            opacity: 1, scale: 1, duration: 0.01, ease: "none"
-          }, labelStart);
-        }
-        
-        if (pathRefs.current[layer.key]) {
-          tl.to(pathRefs.current[layer.key], {
-            strokeDashoffset: 0, duration: 0.03, ease: "power2.out"
-          }, labelStart + 0.01);
-        }
-        
-        if (textRefs.current[layer.key]) {
-          tl.to(textRefs.current[layer.key], {
-            opacity: 1, x: 0, duration: 0.03, ease: "power2.out"
-          }, labelStart + 0.03);
-        }
-      });
 
-      if (reassemblyTextRef.current) {
-        tl.fromTo(reassemblyTextRef.current, 
-          { opacity: 0, y: 100 },
-          { opacity: 1, y: 0, duration: 0.05, ease: "power2.out" },
-          STORY_PHASES.SHOWCASE_END
-        );
-      }
-    });
-
-    return () => { ctx.revert(); };
-  }, [isReady, resolvedLayers]);
-
-  const onPositionsUpdate = useCallback((positions: Record<string, {x: number, y: number, r: number}>) => {
+  const onPositionsUpdate = useCallback((positions: Record<string, {x: number, y: number, r: number}>, progress: number) => {
     if (resolvedLayers.length === 0) return;
 
     const leftItems: { layer: LayerName, projX: number, projY: number, labelY: number, r: number }[] = [];
@@ -291,7 +260,52 @@ export const HeroAndExploded = () => {
         dotEl.setAttribute("cx", String(startX));
         dotEl.setAttribute("cy", String(projY));
       }
+
+      // DETERMINISTIC ANIMATION STATE
+      const { end } = getLayerSegment(config.index);
+      const labelStart = end + 0.01;
+      const LINE_DURATION = 0.03;
+      const LABEL_DURATION = 0.03;
+
+      const lineProgress = THREE.MathUtils.clamp((progress - labelStart) / LINE_DURATION, 0, 1);
+      const textProgress = THREE.MathUtils.clamp((progress - labelStart - 0.01) / LABEL_DURATION, 0, 1);
+
+      const lineEase = 1 - Math.pow(1 - lineProgress, 2);
+      const textEase = 1 - Math.pow(1 - textProgress, 2);
+
+      if (dotEl) {
+        dotEl.style.opacity = String(lineProgress > 0 ? 1 : 0);
+        dotEl.style.transform = `scale(${lineProgress > 0 ? 1 : 0})`;
+        dotEl.style.transformOrigin = `${projX}px ${projY}px`;
+      }
+
+      if (pathEl) {
+        pathEl.style.strokeDashoffset = String(100 - lineEase * 100);
+      }
+
+      const textEl = textRefs.current[layer];
+      if (textEl) {
+        textEl.style.opacity = String(textEase);
+        const xOffset = isLeft ? 16 : -16;
+        textEl.style.transform = `translateX(${xOffset - xOffset * textEase}px)`;
+      }
     });
+
+    // Animate Hero Copy deterministically
+    if (heroContentRef.current) {
+      const heroP = THREE.MathUtils.clamp(progress / STORY_PHASES.EXPLOSION_START, 0, 1);
+      const heroEase = heroP * heroP; // easeIn
+      heroContentRef.current.style.opacity = String(1 - heroP);
+      heroContentRef.current.style.transform = `translate(-50%, calc(-50% - ${heroEase * 100}px))`;
+    }
+
+    // Animate Reassembly Text deterministically
+    if (reassemblyTextRef.current) {
+      const reassemblyP = THREE.MathUtils.clamp((progress - STORY_PHASES.SHOWCASE_END) / 0.05, 0, 1);
+      const reassemblyEase = 1 - Math.pow(1 - reassemblyP, 2); // easeOut
+      reassemblyTextRef.current.style.opacity = String(reassemblyP);
+      reassemblyTextRef.current.style.transform = `translateY(${100 - reassemblyEase * 100}px)`;
+    }
   }, [resolvedLayers]);
 
   return (
@@ -321,9 +335,9 @@ export const HeroAndExploded = () => {
           </ErrorBoundary>
         </div>
 
-        <div ref={heroContentRef} className="absolute inset-0 pointer-events-none flex flex-col items-center justify-center pt-[100px] z-20">
+        <div ref={heroContentRef} className="absolute left-1/2 top-[68%] -translate-x-1/2 -translate-y-1/2 w-[min(90vw,900px)] text-center pointer-events-none z-20">
           <div className="relative text-center">
-            <h1 className="text-[clamp(3.5rem,10vw,7.5rem)] font-black uppercase tracking-tighter leading-[0.8] text-white w-[90vw] md:w-auto mx-auto max-w-[1200px]">
+            <h1 className="text-[clamp(3.5rem,10vw,7.5rem)] font-black uppercase tracking-tighter leading-[0.8] text-white mx-auto">
               <span className="block drop-shadow-2xl">STACKED</span>
               <span className="block text-transparent bg-clip-text bg-gradient-to-b from-flame-orange to-[#b33c00] drop-shadow-lg">DIFFERENT.</span>
             </h1>
