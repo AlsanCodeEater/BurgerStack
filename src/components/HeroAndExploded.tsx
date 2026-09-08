@@ -321,9 +321,9 @@ export const HeroAndExploded = () => {
           </ErrorBoundary>
         </div>
 
-        <div ref={heroContentRef} className="absolute inset-0 pointer-events-none flex flex-col items-center justify-center pt-[100px] z-20">
+        <div ref={heroContentRef} className="absolute left-1/2 top-[75%] md:top-[68%] -translate-x-1/2 -translate-y-1/2 w-[min(92vw,900px)] text-center pointer-events-none z-20">
           <div className="relative text-center">
-            <h1 className="text-[clamp(3.5rem,10vw,7.5rem)] font-black uppercase tracking-tighter leading-[0.8] text-white w-[90vw] md:w-auto mx-auto max-w-[1200px]">
+            <h1 className="text-[clamp(3.5rem,10vw,7.5rem)] font-black uppercase tracking-tighter leading-[0.8] text-white mx-auto">
               <span className="block drop-shadow-2xl">STACKED</span>
               <span className="block text-transparent bg-clip-text bg-gradient-to-b from-flame-orange to-[#b33c00] drop-shadow-lg">DIFFERENT.</span>
             </h1>

@@ -44,29 +44,24 @@ export const GLBBurgerModel = forwardRef<GLBBurgerModelRef, GLBBurgerModelProps>
     const { size, viewport, camera, gl } = useThree();
     
     const canvasWidth = size.width;
-    const canvasHeight = size.height;
-
     const isMobile = canvasWidth < 768;
     const isTablet = canvasWidth >= 768 && canvasWidth < 1024;
-    const isDesktop = canvasWidth >= 1024;
+    
+    // Step 12: Pure outer wrapper scaling for responsiveness
+    let presentationScale = 1;
+    if (mode !== 'configurator') {
+      if (isMobile) presentationScale = 0.65;
+      else if (isTablet) presentationScale = 0.85;
+    } else {
+      if (isMobile) presentationScale = 0.8;
+      else if (isTablet) presentationScale = 0.9;
+    }
 
-    const config = isMobile
-      ? {
-          hero: { scale: 0.975, y: 0.3, cameraZ: 14 },
-          story: { scale: 0.975, y: 0, cameraZ: 14 },
-          configurator: { scale: 0.975, y: -0.35, cameraZ: 14 }
-        }
-      : isTablet
-      ? {
-          hero: { scale: 1.275, y: 0, cameraZ: 13 },
-          story: { scale: 1.275, y: 0, cameraZ: 13 },
-          configurator: { scale: 1.275, y: -0.35, cameraZ: 13 }
-        }
-      : {
-          hero: { scale: 1.5, y: -0.35, cameraZ: 12 },
-          story: { scale: 1.5, y: 0, cameraZ: 12 },
-          configurator: { scale: 1.5, y: -0.35, cameraZ: 12 }
-        };
+    const config = {
+      hero: { scale: 1.5, y: -0.35, cameraZ: 12 },
+      story: { scale: 1.5, y: 0, cameraZ: 12 },
+      configurator: { scale: 1.5, y: -0.35, cameraZ: 12 }
+    };
 
     const currentMode = mode === 'configurator' ? config.configurator : (scrollProgressRef.current < 0.1 ? config.hero : config.story);
     const baseScale = currentMode.scale;
@@ -139,12 +134,12 @@ export const GLBBurgerModel = forwardRef<GLBBurgerModelRef, GLBBurgerModelProps>
       
       resolvedNodes.current.forEach((obj, key) => {
         const orig = originalTransforms.current.get(key);
-        const config = BURGER_LAYERS.find(l => l.key === key);
-        if (orig && config) {
-          const explosionMultiplier = getExplosionMultiplier(canvasWidth);
+        const configLayer = BURGER_LAYERS.find(l => l.key === key);
+        if (orig && configLayer) {
           const explosionExit = orig.position.clone();
-          explosionExit.x += config.explosionDir.x * viewport.width * 0.35 * explosionMultiplier;
-          explosionExit.y += config.explosionDir.y * viewport.height * 0.35 * explosionMultiplier;
+          // Desktop constants
+          explosionExit.x += configLayer.explosionDir.x * viewport.width * 0.35;
+          explosionExit.y += configLayer.explosionDir.y * viewport.height * 0.35;
           
           const hiddenAbove = explosionExit.clone();
           hiddenAbove.y += offscreenDistY;
@@ -155,7 +150,7 @@ export const GLBBurgerModel = forwardRef<GLBBurgerModelRef, GLBBurgerModelProps>
           obj.scale.copy(orig.scale);
         }
       });
-    }, [clonedScene, viewport.width, viewport.height, isMobile, onResolvedLayers]);
+    }, [clonedScene, viewport.width, viewport.height, onResolvedLayers]);
 
     useFrame((state) => {
       // Determine target configuration based on current progress/mode
@@ -361,7 +356,7 @@ export const GLBBurgerModel = forwardRef<GLBBurgerModelRef, GLBBurgerModelProps>
         ref={presentationRef}
         position={position ?? [0, 0, 0]}
         rotation={MODEL_ROTATION}
-        scale={[baseScale * scale, baseScale * scale, baseScale * scale]}
+        scale={presentationScale * baseScale * scale}
       >
         <group ref={floatingRef}>
           <group ref={centeringRef}>

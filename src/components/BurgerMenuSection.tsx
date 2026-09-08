@@ -133,10 +133,10 @@ export const BurgerMenuSection = () => {
       </div>
 
       {/* HTML Menu Overlay */}
-      <div className="relative z-10 w-full flex-1 max-w-[1500px] mx-auto px-4 md:px-8 flex flex-col lg:grid lg:grid-cols-[minmax(300px,1fr)_minmax(460px,620px)_minmax(300px,1fr)] gap-6 lg:items-center pointer-events-none">
+      <div className="relative z-10 w-full flex-1 max-w-[1500px] mx-auto px-4 md:px-8 flex flex-col md:grid md:grid-cols-2 lg:grid-cols-[minmax(300px,1fr)_minmax(460px,620px)_minmax(300px,1fr)] gap-6 lg:items-center pointer-events-none">
         
         {/* Mobile/Tablet Spacer for 3D Burger */}
-        <div className="lg:hidden w-full h-[35vh] min-h-[300px] pointer-events-none"></div>
+        <div className="lg:hidden w-full md:col-span-2 h-[35vh] min-h-[300px] pointer-events-none"></div>
 
         {/* Left Column (or Mobile Top) */}
         <div className="flex flex-col w-full space-y-4 md:space-y-6">
@@ -157,7 +157,7 @@ export const BurgerMenuSection = () => {
         <div className="hidden lg:block w-full h-full pointer-events-none"></div>
 
         {/* Right Column (or Mobile Bottom) */}
-        <div className="flex flex-col w-full space-y-4 md:space-y-6 mt-4 md:mt-0 md:items-end">
+        <div className="flex flex-col w-full space-y-4 md:space-y-6 md:mt-0 lg:items-end">
           {rightItems.map((burger) => (
             <MenuItem 
               key={burger.id} 
