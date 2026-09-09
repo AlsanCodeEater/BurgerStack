@@ -1,9 +1,12 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import { ShoppingCart, Menu, X } from 'lucide-react';
+import { gsap } from 'gsap';
 
 export const Navbar = () => {
   const [scrolled, setScrolled] = useState(false);
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
+  const [cartCount, setCartCount] = useState(0);
+  const cartButtonRef = useRef<HTMLButtonElement>(null);
 
   useEffect(() => {
     const handleScroll = () => {
@@ -12,13 +15,69 @@ export const Navbar = () => {
     const handleKeyDown = (e: KeyboardEvent) => {
       if (e.key === 'Escape') setMobileMenuOpen(false);
     };
+
+    const handleAddToCart = (e: Event) => {
+      const customEvent = e as CustomEvent;
+      const quantity = customEvent.detail?.quantity ?? 1;
+      setCartCount((count) => count + quantity);
+    };
+
+    const handleCartImpact = () => {
+      const el = cartButtonRef.current;
+      if (!el) return;
+
+      gsap.killTweensOf(el);
+      const tl = gsap.timeline();
+      
+      tl.to(el, {
+        scale: 1.3,
+        rotation: -10,
+        duration: 0.12,
+        ease: 'power2.out',
+      })
+      .to(el, {
+        scale: 0.9,
+        rotation: 7,
+        duration: 0.12,
+        ease: 'power2.inOut',
+      })
+      .to(el, {
+        scale: 1,
+        rotation: 0,
+        duration: 0.11,
+        ease: 'back.out(2)',
+      });
+    };
+
     window.addEventListener('scroll', handleScroll);
     window.addEventListener('keydown', handleKeyDown);
+    window.addEventListener('stacked:add-to-cart-complete', handleAddToCart);
+    window.addEventListener('stacked:cart-impact', handleCartImpact);
+
     return () => {
       window.removeEventListener('scroll', handleScroll);
       window.removeEventListener('keydown', handleKeyDown);
+      window.removeEventListener('stacked:add-to-cart-complete', handleAddToCart);
+      window.removeEventListener('stacked:cart-impact', handleCartImpact);
     };
   }, []);
+
+  const badgeRef = useRef<HTMLSpanElement>(null);
+
+  useEffect(() => {
+    if (cartCount > 0 && badgeRef.current) {
+      const tl = gsap.timeline();
+      tl.fromTo(
+        badgeRef.current,
+        { scale: 0.8 },
+        { scale: 1.4, duration: 0.2, ease: 'power2.out' }
+      ).to(badgeRef.current, {
+        scale: 1,
+        duration: 0.15,
+        ease: 'power2.inOut',
+      });
+    }
+  }, [cartCount]);
 
   return (
     <header 
@@ -51,8 +110,21 @@ export const Navbar = () => {
 
         {/* Right: Actions */}
         <div className="flex-1 flex justify-end items-center space-x-6">
-          <button className="hover:text-flame-orange transition-colors text-warm-cream">
+          <button
+            id="navbar-cart"
+            data-cart-button="true"
+            ref={cartButtonRef}
+            className="hover:text-flame-orange transition-colors text-warm-cream relative"
+          >
             <ShoppingCart size={24} />
+            {cartCount > 0 && (
+              <span 
+                ref={badgeRef}
+                className="absolute -top-2 -right-2 min-w-[18px] h-[18px] rounded-full bg-flame-orange text-charcoal text-[10px] font-black flex items-center justify-center"
+              >
+                {cartCount}
+              </span>
+            )}
           </button>
           <button className="hidden md:inline-block bg-flame-orange text-warm-cream px-6 py-3 rounded-full font-bold tracking-wide hover:bg-tomato-red transition-colors relative z-50">
             ORDER NOW

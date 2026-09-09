@@ -1,5 +1,12 @@
-import React, { useEffect, useMemo, useRef, useState } from 'react';
-import { Canvas, useFrame } from '@react-three/fiber';
+import React, {
+  useState,
+  useRef,
+  useEffect,
+  useMemo,
+  forwardRef,
+  useImperativeHandle
+} from 'react';
+import { Canvas, useFrame, useThree } from '@react-three/fiber';
 import { ContactShadows, Environment } from '@react-three/drei';
 import { gsap } from 'gsap';
 import * as THREE from 'three';
@@ -8,15 +15,124 @@ import { GLBBurgerModel } from './3d/GLBBurgerModel';
 import { burgers } from '../data/burgers';
 import { BurgerData } from '../types';
 import { ErrorBoundary } from './ErrorBoundary';
+import { CartFlyBurger } from './CartFlyBurger';
 
-const MenuScene = ({ activeBurger }: { activeBurger: BurgerData }) => {
-  // interactionRef is ONLY click-selection rotation/scale.
+export interface MenuSceneRef {
+  getScreenBounds: () => { centerX: number; centerY: number; width: number; height: number } | null;
+  animateCompression: () => void;
+}
+
+const MenuScene = forwardRef<MenuSceneRef, { activeBurger: BurgerData }>(({ activeBurger }, ref) => {
   const interactionRef = useRef<THREE.Group>(null);
-  // hoverRef is ONLY tiny idle motion.
   const hoverRef = useRef<THREE.Group>(null);
+  const burgerVisualRef = useRef<THREE.Group>(null);
   const previousIndexRef = useRef(
     Math.max(0, burgers.findIndex((burger) => burger.id === activeBurger.id)),
   );
+
+  const { camera, gl } = useThree();
+
+  useImperativeHandle(ref, () => ({
+    getScreenBounds: () => {
+      const burger = burgerVisualRef.current;
+      if (!burger) return null;
+
+      burger.updateWorldMatrix(true, true);
+      const box = new THREE.Box3().setFromObject(burger);
+
+      if (box.isEmpty()) return null;
+
+      const corners = [
+        new THREE.Vector3(box.min.x, box.min.y, box.min.z),
+        new THREE.Vector3(box.min.x, box.min.y, box.max.z),
+        new THREE.Vector3(box.min.x, box.max.y, box.min.z),
+        new THREE.Vector3(box.min.x, box.max.y, box.max.z),
+        new THREE.Vector3(box.max.x, box.min.y, box.min.z),
+        new THREE.Vector3(box.max.x, box.min.y, box.max.z),
+        new THREE.Vector3(box.max.x, box.max.y, box.min.z),
+        new THREE.Vector3(box.max.x, box.max.y, box.max.z),
+      ];
+
+      const canvasRect = gl.domElement.getBoundingClientRect();
+      let minScreenX = Infinity;
+      let maxScreenX = -Infinity;
+      let minScreenY = Infinity;
+      let maxScreenY = -Infinity;
+
+      corners.forEach((corner) => {
+        corner.project(camera);
+        const screenX = ((corner.x + 1) / 2) * canvasRect.width + canvasRect.left;
+        const screenY = (-(corner.y - 1) / 2) * canvasRect.height + canvasRect.top;
+
+        if (screenX < minScreenX) minScreenX = screenX;
+        if (screenX > maxScreenX) maxScreenX = screenX;
+        if (screenY < minScreenY) minScreenY = screenY;
+        if (screenY > maxScreenY) maxScreenY = screenY;
+      });
+
+      return {
+        centerX: (minScreenX + maxScreenX) / 2,
+        centerY: (minScreenY + maxScreenY) / 2,
+        width: maxScreenX - minScreenX,
+        height: maxScreenY - minScreenY,
+      };
+    },
+    animateCompression: () => {
+      const root = interactionRef.current;
+      if (!root) return;
+
+      gsap.killTweensOf(root.scale);
+      gsap.killTweensOf(root.rotation);
+      gsap.killTweensOf(root.position);
+
+      const baseY = 0;
+      const currentRotY = root.rotation.y;
+
+      const bounceTl = gsap.timeline();
+
+      bounceTl
+        .to(root.scale, {
+          x: 1.08,
+          y: 1.08,
+          z: 1.08,
+          duration: 0.12,
+          ease: 'power2.out',
+        }, 0)
+        .to(root.rotation, {
+          y: currentRotY + 0.18,
+          duration: 0.20,
+          ease: 'power2.out',
+        }, 0)
+        .to(root.position, {
+          y: baseY + 0.10,
+          duration: 0.12,
+          ease: 'power2.out',
+        }, 0)
+        .to(root.scale, {
+          x: 0.97,
+          y: 0.97,
+          z: 0.97,
+          duration: 0.12,
+        })
+        .to(root.position, {
+          y: baseY,
+          duration: 0.16,
+          ease: 'power2.in',
+        }, '<')
+        .to(root.scale, {
+          x: 1,
+          y: 1,
+          z: 1,
+          duration: 0.16,
+          ease: 'back.out(1.8)',
+        })
+        .to(root.rotation, {
+          y: currentRotY,
+          duration: 0.20,
+          ease: 'power2.inOut',
+        }, 0.20);
+    },
+  }));
 
   useEffect(() => {
     const root = interactionRef.current;
@@ -89,11 +205,13 @@ const MenuScene = ({ activeBurger }: { activeBurger: BurgerData }) => {
   return (
     <group ref={interactionRef}>
       <group ref={hoverRef}>
-        <GLBBurgerModel
-          enableIdleAnimation={false}
-          mode="configurator"
-          scale={2.15}
-        />
+        <group ref={burgerVisualRef}>
+          <GLBBurgerModel
+            enableIdleAnimation={false}
+            mode="configurator"
+            scale={2.15}
+          />
+        </group>
       </group>
 
       <ContactShadows
@@ -128,21 +246,24 @@ const MenuScene = ({ activeBurger }: { activeBurger: BurgerData }) => {
       <ambientLight intensity={0.3} color="#ffe6cc" />
     </group>
   );
-};
+});
 
 const BurgerDetails = ({
   burger,
   quantity,
   setQuantity,
   side,
+  onAdd,
+  status,
 }: {
   burger: BurgerData;
   quantity: number;
   setQuantity: React.Dispatch<React.SetStateAction<number>>;
   side: 'left' | 'right';
+  onAdd: (quantity: number) => void;
+  status: 'idle' | 'adding' | 'added';
 }) => {
   const detailsRef = useRef<HTMLDivElement>(null);
-  const [added, setAdded] = useState(false);
 
   useEffect(() => {
     const element = detailsRef.current;
@@ -153,10 +274,6 @@ const BurgerDetails = ({
       { opacity: 0, y: 10 },
       { opacity: 1, y: 0, duration: 0.35, ease: 'power2.out' },
     );
-  }, [burger.id]);
-
-  useEffect(() => {
-    setAdded(false);
   }, [burger.id]);
 
   return (
@@ -239,21 +356,24 @@ const BurgerDetails = ({
 
         <button
           type="button"
+          disabled={status !== 'idle'}
           onClick={() => {
-            setAdded(true);
-            window.setTimeout(() => setAdded(false), 1400);
+            if (status !== 'idle') return;
+            onAdd(quantity);
           }}
           className={
             `flex min-w-[170px] items-center justify-center gap-2 rounded-full px-5 py-3 text-[10px] font-bold uppercase tracking-widest text-warm-cream transition-all ` +
-            (added
+            (status === 'added'
               ? 'bg-green-600'
               : 'bg-flame-orange hover:bg-tomato-red')
           }
         >
-          <Check size={14} />
-          {added
-            ? 'ADDED'
-            : `ADD - $${(burger.price * quantity).toFixed(2)}`}
+          {status === 'added' && <Check size={14} />}
+          {status === 'adding'
+            ? 'ADDING...'
+            : status === 'added'
+              ? 'ADDED'
+              : `ADD - $${(burger.price * quantity).toFixed(2)}`}
         </button>
       </div>
     </div>
@@ -267,6 +387,8 @@ const MenuOption = ({
   onSelect,
   quantity,
   setQuantity,
+  onAdd,
+  status,
 }: {
   burger: BurgerData;
   active: boolean;
@@ -274,6 +396,8 @@ const MenuOption = ({
   onSelect: (id: string) => void;
   quantity: number;
   setQuantity: React.Dispatch<React.SetStateAction<number>>;
+  onAdd: (quantity: number) => void;
+  status: 'idle' | 'adding' | 'added';
 }) => {
   const isLeft = side === 'left';
 
@@ -349,6 +473,8 @@ const MenuOption = ({
           quantity={quantity}
           setQuantity={setQuantity}
           side={side}
+          onAdd={onAdd}
+          status={status}
         />
       )}
     </div>
@@ -358,6 +484,18 @@ const MenuOption = ({
 export const BurgerMenuSection = () => {
   const [activeBurgerId, setActiveBurgerId] = useState(burgers[0].id);
   const [quantity, setQuantity] = useState(1);
+  const [addingStatus, setAddingStatus] = useState<'idle' | 'adding' | 'added'>('idle');
+  const [flyProps, setFlyProps] = useState<{
+    startX: number;
+    startY: number;
+    targetX: number;
+    targetY: number;
+    size: number;
+    burger: BurgerData;
+    qty: number;
+  } | null>(null);
+
+  const menuSceneRef = useRef<MenuSceneRef>(null);
 
   const activeBurger =
     burgers.find((burger) => burger.id === activeBurgerId) ?? burgers[0];
@@ -370,6 +508,44 @@ export const BurgerMenuSection = () => {
     if (id === activeBurgerId) return;
     setActiveBurgerId(id);
     setQuantity(1);
+    setAddingStatus('idle');
+  };
+
+  const handleAdd = (qty: number) => {
+    if (addingStatus !== 'idle') return;
+
+    const cartEl = document.querySelector('[data-cart-button]');
+    if (!cartEl || !menuSceneRef.current) return;
+
+    const bounds = menuSceneRef.current.getScreenBounds();
+    if (!bounds) return;
+
+    menuSceneRef.current.animateCompression();
+
+    const cartRect = cartEl.getBoundingClientRect();
+    const targetX = cartRect.left + cartRect.width / 2;
+    const targetY = cartRect.top + cartRect.height / 2;
+
+    const projectileSize = Math.max(170, Math.min(220, bounds.height * 0.7));
+
+    setAddingStatus('adding');
+    setFlyProps({
+      startX: bounds.centerX,
+      startY: bounds.centerY,
+      targetX,
+      targetY,
+      size: projectileSize,
+      burger: activeBurger,
+      qty,
+    });
+  };
+
+  const handleFlyComplete = () => {
+    setFlyProps(null);
+    setAddingStatus('added');
+    setTimeout(() => {
+      setAddingStatus('idle');
+    }, 700);
   };
 
   return (
@@ -377,6 +553,19 @@ export const BurgerMenuSection = () => {
       id="menu"
       className="relative min-h-screen w-full overflow-hidden bg-charcoal py-20 text-warm-cream"
     >
+      {flyProps && (
+        <CartFlyBurger
+          startX={flyProps.startX}
+          startY={flyProps.startY}
+          targetX={flyProps.targetX}
+          targetY={flyProps.targetY}
+          size={flyProps.size}
+          activeBurger={flyProps.burger}
+          quantity={flyProps.qty}
+          onComplete={handleFlyComplete}
+        />
+      )}
+
       <div className="pointer-events-none absolute inset-0 z-0 flex items-center justify-center">
         <div className="h-[700px] w-[700px] rounded-full bg-gradient-to-r from-tomato-red/5 to-transparent opacity-20 blur-[120px]" />
       </div>
@@ -406,11 +595,13 @@ export const BurgerMenuSection = () => {
                 onSelect={handleSelect}
                 quantity={quantity}
                 setQuantity={setQuantity}
+                onAdd={handleAdd}
+                status={addingStatus}
               />
             ))}
           </div>
 
-          <div className="order-1 h-[430px] w-full lg:order-2 lg:h-[600px]">
+          <div id="configurator-burger-stage" className="order-1 h-[430px] w-full lg:order-2 lg:h-[600px]">
             <ErrorBoundary>
               <Canvas
                 shadows
@@ -418,7 +609,7 @@ export const BurgerMenuSection = () => {
                 dpr={[1, 1.5]}
                 gl={{ alpha: true, antialias: true }}
               >
-                <MenuScene activeBurger={activeBurger} />
+                <MenuScene activeBurger={activeBurger} ref={menuSceneRef} />
               </Canvas>
             </ErrorBoundary>
           </div>
@@ -433,6 +624,8 @@ export const BurgerMenuSection = () => {
                 onSelect={handleSelect}
                 quantity={quantity}
                 setQuantity={setQuantity}
+                onAdd={handleAdd}
+                status={addingStatus}
               />
             ))}
           </div>
