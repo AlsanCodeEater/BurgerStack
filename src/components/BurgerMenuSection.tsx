@@ -11,7 +11,7 @@ import { ContactShadows, Environment } from '@react-three/drei';
 import { gsap } from 'gsap';
 import * as THREE from 'three';
 import { Check, Flame, Minus, Plus } from 'lucide-react';
-import { GLBBurgerModel } from './3d/GLBBurgerModel';
+import { GLBBurgerModel, GLBBurgerModelRef } from './3d/GLBBurgerModel';
 import { burgers } from '../data/burgers';
 import { BurgerData } from '../types';
 import { ErrorBoundary } from './ErrorBoundary';
@@ -26,6 +26,7 @@ const MenuScene = forwardRef<MenuSceneRef, { activeBurger: BurgerData }>(({ acti
   const interactionRef = useRef<THREE.Group>(null);
   const hoverRef = useRef<THREE.Group>(null);
   const burgerVisualRef = useRef<THREE.Group>(null);
+  const modelRef = useRef<GLBBurgerModelRef>(null);
   const previousIndexRef = useRef(
     Math.max(0, burgers.findIndex((burger) => burger.id === activeBurger.id)),
   );
@@ -34,7 +35,9 @@ const MenuScene = forwardRef<MenuSceneRef, { activeBurger: BurgerData }>(({ acti
 
   useImperativeHandle(ref, () => ({
     getScreenBounds: () => {
-      const burger = burgerVisualRef.current;
+      // IMPORTANT: always measure the actual main Configurator burger,
+      // never the left/right ADD button and never the invisible drag plane.
+      const burger = modelRef.current?.presentationGroup;
       if (!burger) return null;
 
       burger.updateWorldMatrix(true, true);
@@ -92,26 +95,26 @@ const MenuScene = forwardRef<MenuSceneRef, { activeBurger: BurgerData }>(({ acti
 
       bounceTl
         .to(root.scale, {
-          x: 1.08,
-          y: 1.08,
-          z: 1.08,
+          x: 1.028,
+          y: 1.028,
+          z: 1.028,
           duration: 0.12,
           ease: 'power2.out',
         }, 0)
         .to(root.rotation, {
-          y: currentRotY + 0.18,
+          y: currentRotY + 0.055,
           duration: 0.20,
           ease: 'power2.out',
         }, 0)
         .to(root.position, {
-          y: baseY + 0.10,
+          y: baseY + 0.030,
           duration: 0.12,
           ease: 'power2.out',
         }, 0)
         .to(root.scale, {
-          x: 0.97,
-          y: 0.97,
-          z: 0.97,
+          x: 0.988,
+          y: 0.988,
+          z: 0.988,
           duration: 0.12,
         })
         .to(root.position, {
@@ -197,9 +200,12 @@ const MenuScene = forwardRef<MenuSceneRef, { activeBurger: BurgerData }>(({ acti
     if (!hover) return;
 
     const elapsed = state.clock.getElapsedTime();
-    hover.position.y = Math.sin(elapsed * 0.58) * 0.035;
-    hover.rotation.y = Math.sin(elapsed * 0.28) * 0.025;
-    hover.rotation.z = Math.cos(elapsed * 0.4) * 0.006;
+    hover.position.y = Math.sin(elapsed * 0.62) * 0.060;
+    hover.rotation.y = Math.sin(elapsed * 0.30) * 0.038;
+    hover.rotation.z = Math.cos(elapsed * 0.42) * 0.010;
+    hover.rotation.x = Math.sin(elapsed * 0.24) * 0.006;
+    const pulse = 1 + Math.sin(elapsed * 0.48) * 0.004;
+    hover.scale.setScalar(pulse);
   });
 
   return (
@@ -207,7 +213,8 @@ const MenuScene = forwardRef<MenuSceneRef, { activeBurger: BurgerData }>(({ acti
       <group ref={hoverRef}>
         <group ref={burgerVisualRef}>
           <GLBBurgerModel
-            enableIdleAnimation={false}
+            ref={modelRef}
+            enableIdleAnimation
             mode="configurator"
             scale={2.15}
           />
@@ -526,7 +533,7 @@ export const BurgerMenuSection = () => {
     const targetX = cartRect.left + cartRect.width / 2;
     const targetY = cartRect.top + cartRect.height / 2;
 
-    const projectileSize = Math.max(170, Math.min(220, bounds.height * 0.7));
+    const projectileSize = Math.max(165, Math.min(245, bounds.height * 0.74));
 
     setAddingStatus('adding');
     setFlyProps({

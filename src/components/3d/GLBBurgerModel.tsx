@@ -23,26 +23,34 @@ import {
 const MODEL_PATH = '/models/burger-final.glb';
 
 /**
- * One deterministic story timeline.
+ * Single deterministic Story timeline.
  *
  * 0.00 - 0.10  Hero assembled
- * 0.10 - 0.18  Hero -> center transition
- * 0.18 - 0.24  Center hold
+ * 0.10 - 0.18  Hero -> Story center
+ * 0.18 - 0.24  Large assembled center hold
  * 0.24 - 0.40  Explosion
- * 0.40 - 0.43  Exploded hold
- * 0.43 - 0.88  Bottom -> top rebuild
+ * 0.40 - 0.43  Exploded hold / inspection
+ * 0.43 - 0.88  Bottom -> top heavy rebuild
  * 0.88 - 0.94  Final settle
- * 0.94 - 1.00  Final assembled hold
+ * 0.94 - 1.00  Final assembled / interactive
  */
 export const BURGER_STORY_PHASES = {
-  HERO_END: 0.10,
-  CENTERING_END: 0.18,
-  CENTER_HOLD_END: 0.24,
-  EXPLOSION_END: 0.40,
-  CROSSOVER_END: 0.43,
-  REBUILD_END: 0.88,
-  FINAL_SETTLE_END: 0.94,
-  FINAL_END: 1,
+  HERO_END: 0.16,
+  CENTERING_END: 0.28,
+  CENTER_HOLD_END: 0.34,
+
+  // Explosion grows to the full inspection composition.
+  EXPLOSION_END: 0.68,
+
+  // Short exploded hold where labels + part dragging are active.
+  CROSSOVER_END: 0.76,
+
+  // ALL ingredients magnetically reassemble together in this interval.
+  REBUILD_END: 0.96,
+
+  // Very short final assembled state, then the Story pin releases to Configurator.
+  FINAL_SETTLE_END: 1.0,
+  FINAL_END: 1.0,
 } as const;
 
 export type StoryLayerTiming = {
@@ -68,17 +76,18 @@ export function getStoryLayerTiming(
     BURGER_STORY_PHASES.CROSSOVER_END +
     index * slot;
 
-  // Keep each layer mostly inside its own slot so the rebuild is readable.
   const buildEnd = Math.min(
     buildStart + slot * 0.84,
     BURGER_STORY_PHASES.REBUILD_END,
   );
 
+  // Kept for API compatibility. Labels are now driven by the explosion phase
+  // in HeroAndExploded.tsx, not by these rebuild values.
   return {
     buildStart,
     buildEnd,
-    lineStart: buildStart + slot * 0.58,
-    textStart: buildStart + slot * 0.68,
+    lineStart: buildStart,
+    textStart: buildStart,
   };
 }
 
@@ -86,6 +95,7 @@ export interface GLBBurgerModelRef {
   presentationGroup: THREE.Group | null;
   setScrollProgress: (value: number) => void;
   getScrollProgress: () => number;
+  resetManualRotation: () => void;
 }
 
 interface GLBBurgerModelProps {
@@ -99,11 +109,7 @@ interface GLBBurgerModelProps {
   onPositionsUpdate?: (
     positions: Record<
       string,
-      {
-        x: number;
-        y: number;
-        r: number;
-      }
+      { x: number; y: number; r: number }
     >,
   ) => void;
   onResolvedLayers?: (layers: BurgerLayer[]) => void;
@@ -121,6 +127,22 @@ type MotionTarget = {
   focusUpper: THREE.Vector3;
   focusLower: THREE.Vector3;
   focusActive: THREE.Vector3;
+};
+
+type PartRotationState = {
+  targetX: number;
+  targetY: number;
+  currentX: number;
+  currentY: number;
+};
+
+type DragState = {
+  dragging: boolean;
+  kind: 'whole' | 'part' | null;
+  layerKey: LayerName | null;
+  pointerId: number | null;
+  lastX: number;
+  lastY: number;
 };
 
 const clamp01 = (value: number) =>
@@ -149,24 +171,11 @@ function easeInOutCubic(t: number) {
           2;
 }
 
-/**
- * Get bounds in the imported GLB root's LOCAL space.
- *
- * Generated GLBs often contain nested scales such as 0.01 / 100.
- * Using root-local measurements keeps all motion predictable.
- */
-function getRootLocalBounds(
-  root: THREE.Object3D,
-) {
-  root.updateWorldMatrix(
-    true,
-    true,
-  );
+function getRootLocalBounds(root: THREE.Object3D) {
+  root.updateWorldMatrix(true, true);
 
   const rootInverse =
-    root.matrixWorld
-      .clone()
-      .invert();
+    root.matrixWorld.clone().invert();
 
   const box =
     new THREE.Box3();
@@ -174,153 +183,73 @@ function getRootLocalBounds(
   const temp =
     new THREE.Vector3();
 
-  const corners =
-    Array.from(
-      { length: 8 },
-      () => new THREE.Vector3(),
-    );
-
-  root.traverse(
-    (object: any) => {
-      if (
-        !object.isMesh ||
-        !object.geometry
-      ) {
-        return;
-      }
-
-      if (
-        !object.geometry.boundingBox
-      ) {
-        object.geometry.computeBoundingBox();
-      }
-
-      const bounds:
-        | THREE.Box3
-        | null =
-        object.geometry.boundingBox;
-
-      if (!bounds) {
-        return;
-      }
-
-      corners[0].set(
-        bounds.min.x,
-        bounds.min.y,
-        bounds.min.z,
-      );
-
-      corners[1].set(
-        bounds.min.x,
-        bounds.min.y,
-        bounds.max.z,
-      );
-
-      corners[2].set(
-        bounds.min.x,
-        bounds.max.y,
-        bounds.min.z,
-      );
-
-      corners[3].set(
-        bounds.min.x,
-        bounds.max.y,
-        bounds.max.z,
-      );
-
-      corners[4].set(
-        bounds.max.x,
-        bounds.min.y,
-        bounds.min.z,
-      );
-
-      corners[5].set(
-        bounds.max.x,
-        bounds.min.y,
-        bounds.max.z,
-      );
-
-      corners[6].set(
-        bounds.max.x,
-        bounds.max.y,
-        bounds.min.z,
-      );
-
-      corners[7].set(
-        bounds.max.x,
-        bounds.max.y,
-        bounds.max.z,
-      );
-
-      corners.forEach(
-        (corner) => {
-          temp
-            .copy(corner)
-            .applyMatrix4(
-              object.matrixWorld,
-            )
-            .applyMatrix4(
-              rootInverse,
-            );
-
-          box.expandByPoint(
-            temp,
-          );
-        },
-      );
-    },
+  const corners = Array.from(
+    { length: 8 },
+    () => new THREE.Vector3(),
   );
+
+  root.traverse((object: any) => {
+    if (!object.isMesh || !object.geometry) {
+      return;
+    }
+
+    if (!object.geometry.boundingBox) {
+      object.geometry.computeBoundingBox();
+    }
+
+    const bounds: THREE.Box3 | null =
+      object.geometry.boundingBox;
+
+    if (!bounds) {
+      return;
+    }
+
+    corners[0].set(bounds.min.x, bounds.min.y, bounds.min.z);
+    corners[1].set(bounds.min.x, bounds.min.y, bounds.max.z);
+    corners[2].set(bounds.min.x, bounds.max.y, bounds.min.z);
+    corners[3].set(bounds.min.x, bounds.max.y, bounds.max.z);
+    corners[4].set(bounds.max.x, bounds.min.y, bounds.min.z);
+    corners[5].set(bounds.max.x, bounds.min.y, bounds.max.z);
+    corners[6].set(bounds.max.x, bounds.max.y, bounds.min.z);
+    corners[7].set(bounds.max.x, bounds.max.y, bounds.max.z);
+
+    corners.forEach((corner) => {
+      temp
+        .copy(corner)
+        .applyMatrix4(object.matrixWorld)
+        .applyMatrix4(rootInverse);
+
+      box.expandByPoint(temp);
+    });
+  });
 
   if (box.isEmpty()) {
     box.setFromCenterAndSize(
       new THREE.Vector3(),
-      new THREE.Vector3(
-        4,
-        4,
-        2,
-      ),
+      new THREE.Vector3(4, 4, 2),
     );
   }
 
   return box;
 }
 
-/**
- * Convert a delta from GLB-root-local space into the target object's
- * parent-local space.
- *
- * This prevents Blender parent scale values from making explosion/rebuild
- * offsets visually tiny or enormous.
- */
 function rootLocalDeltaToParentLocal(
   root: THREE.Object3D,
   object: THREE.Object3D,
   rootLocalDelta: THREE.Vector3,
 ) {
-  const parent =
-    object.parent;
+  const parent = object.parent;
 
   if (!parent) {
     return rootLocalDelta.clone();
   }
 
-  root.updateWorldMatrix(
-    true,
-    false,
-  );
-
-  parent.updateWorldMatrix(
-    true,
-    false,
-  );
+  root.updateWorldMatrix(true, false);
+  parent.updateWorldMatrix(true, false);
 
   const worldA =
     root.localToWorld(
-      new THREE.Vector3(
-        0,
-        0,
-        0,
-      ),
+      new THREE.Vector3(0, 0, 0),
     );
 
   const worldB =
@@ -338,18 +267,14 @@ function rootLocalDeltaToParentLocal(
       worldB.clone(),
     );
 
-  return parentB.sub(
-    parentA,
-  );
+  return parentB.sub(parentA);
 }
 
 function getLayerWorldBoxCenter(
   object: THREE.Object3D,
 ) {
   const box =
-    new THREE.Box3().setFromObject(
-      object,
-    );
+    new THREE.Box3().setFromObject(object);
 
   if (box.isEmpty()) {
     return object.getWorldPosition(
@@ -362,541 +287,795 @@ function getLayerWorldBoxCenter(
   );
 }
 
-export const GLBBurgerModel =
-  forwardRef<
-    GLBBurgerModelRef,
-    GLBBurgerModelProps
-  >(
-    (
-      {
-        enableIdleAnimation = true,
-        scale = 1,
-        position,
-        url = MODEL_PATH,
-        activeLayer = null,
-        mode = 'story',
-        progressRef:
-          externalProgressRef,
-        onPositionsUpdate,
-        onResolvedLayers,
-      },
-      ref,
-    ) => {
-      const { scene } =
-        useGLTF(url);
+export const GLBBurgerModel = forwardRef<
+  GLBBurgerModelRef,
+  GLBBurgerModelProps
+>(
+  (
+    {
+      enableIdleAnimation = true,
+      scale = 1,
+      position,
+      url = MODEL_PATH,
+      activeLayer = null,
+      mode = 'story',
+      progressRef: externalProgressRef,
+      onPositionsUpdate,
+      onResolvedLayers,
+    },
+    ref,
+  ) => {
+    const { scene } = useGLTF(url);
 
-      // Story and Configurator must never mutate the same Object3D instance.
-      const clonedScene =
-        useMemo(
-          () =>
-            scene.clone(true),
-          [scene],
+    const clonedScene = useMemo(
+      () => scene.clone(true),
+      [scene],
+    );
+
+    /**
+     * Transform ownership:
+     *
+     * PresentationRoot  -> scroll/camera presentation only
+     * ManualRotationRoot -> pointer drag rotation only
+     * FloatingRoot      -> subtle live/wave movement only
+     * CenteringRoot     -> imported GLB center correction only
+     */
+    const presentationRef =
+      useRef<THREE.Group>(null);
+
+    const manualRotationRef =
+      useRef<THREE.Group>(null);
+
+    const floatingRef =
+      useRef<THREE.Group>(null);
+
+    const centeringRef =
+      useRef<THREE.Group>(null);
+
+    const internalProgressRef =
+      useRef(0);
+
+    const resolvedNodes =
+      useRef(
+        new Map<string, THREE.Object3D>(),
+      );
+
+    const semanticObjectToLayer =
+      useRef(
+        new Map<string, LayerName>(),
+      );
+
+    const resolvedOrder =
+      useRef<BurgerLayer[]>([]);
+
+    const originalTransforms =
+      useRef(
+        new Map<string, SavedTransform>(),
+      );
+
+    const motionTargets =
+      useRef(
+        new Map<string, MotionTarget>(),
+      );
+
+    const timings =
+      useRef(
+        new Map<string, StoryLayerTiming>(),
+      );
+
+    const focusOffsets =
+      useRef(
+        new Map<
+          string,
+          { upper: number; lower: number; active: number }
+        >(),
+      );
+
+    const anchorLocalPoints =
+      useRef(
+        new Map<string, THREE.Vector3>(),
+      );
+
+    const anchorWorldRadii =
+      useRef(
+        new Map<string, number>(),
+      );
+
+    const rootLocalSize =
+      useRef(
+        new THREE.Vector3(4, 4, 2),
+      );
+
+    const manualTarget =
+      useRef({ x: 0, y: 0 });
+
+    const dragRef =
+      useRef<DragState>({
+        dragging: false,
+        kind: null,
+        layerKey: null,
+        pointerId: null,
+        lastX: 0,
+        lastY: 0,
+      });
+
+    const partRotations =
+      useRef(
+        new Map<string, PartRotationState>(),
+      );
+
+    const tempEuler =
+      useRef(new THREE.Euler());
+
+    const tempQuaternion =
+      useRef(new THREE.Quaternion());
+
+    const { size, gl } =
+      useThree();
+
+    const width =
+      Math.max(1, size.width);
+
+    useEffect(() => {
+      gl.domElement.style.touchAction =
+        'pan-y';
+
+      return () => {
+        gl.domElement.style.cursor = '';
+      };
+    }, [gl]);
+
+    useEffect(() => {
+      resolvedNodes.current.clear();
+      semanticObjectToLayer.current.clear();
+      resolvedOrder.current = [];
+      originalTransforms.current.clear();
+      motionTargets.current.clear();
+      timings.current.clear();
+      focusOffsets.current.clear();
+      anchorLocalPoints.current.clear();
+      anchorWorldRadii.current.clear();
+      partRotations.current.clear();
+
+      clonedScene.updateWorldMatrix(
+        true,
+        true,
+      );
+
+      const worldBox =
+        new THREE.Box3().setFromObject(
+          clonedScene,
         );
 
-      const presentationRef =
-        useRef<THREE.Group>(
-          null,
-        );
-
-      const floatingRef =
-        useRef<THREE.Group>(
-          null,
-        );
-
-      const centeringRef =
-        useRef<THREE.Group>(
-          null,
-        );
-
-      const internalProgressRef =
-        useRef(0);
-
-      const resolvedNodes =
-        useRef(
-          new Map<
-            string,
-            THREE.Object3D
-          >(),
-        );
-
-      const resolvedOrder =
-        useRef<
-          BurgerLayer[]
-        >([]);
-
-      const originalTransforms =
-        useRef(
-          new Map<
-            string,
-            SavedTransform
-          >(),
-        );
-
-      const motionTargets =
-        useRef(
-          new Map<
-            string,
-            MotionTarget
-          >(),
-        );
-
-      const timings =
-        useRef(
-          new Map<
-            string,
-            StoryLayerTiming
-          >(),
-        );
-
-      const focusOffsets =
-        useRef(
-          new Map<
-            string,
-            {
-              upper: number;
-              lower: number;
-              active: number;
-            }
-          >(),
-        );
-
-      const anchorLocalPoints =
-        useRef(
-          new Map<
-            string,
-            THREE.Vector3
-          >(),
-        );
-
-      const anchorWorldRadii =
-        useRef(
-          new Map<
-            string,
-            number
-          >(),
-        );
-
-      const rootLocalSize =
-        useRef(
-          new THREE.Vector3(
-            4,
-            4,
-            2,
-          ),
-        );
-
-      const { size, gl } =
-        useThree();
-
-      const width =
-        Math.max(
-          1,
-          size.width,
-        );
-
-      useEffect(() => {
-        resolvedNodes.current.clear();
-        resolvedOrder.current = [];
-        originalTransforms.current.clear();
-        motionTargets.current.clear();
-        timings.current.clear();
-        focusOffsets.current.clear();
-        anchorLocalPoints.current.clear();
-        anchorWorldRadii.current.clear();
-
-        clonedScene.updateWorldMatrix(
-          true,
-          true,
-        );
-
-        /**
-         * Center the imported GLB once.
-         * This wrapper is NOT an animation channel.
-         */
-        const worldBox =
-          new THREE.Box3().setFromObject(
-            clonedScene,
+      if (
+        !worldBox.isEmpty() &&
+        centeringRef.current
+      ) {
+        const worldCenter =
+          worldBox.getCenter(
+            new THREE.Vector3(),
           );
 
-        if (
-          !worldBox.isEmpty() &&
-          centeringRef.current
-        ) {
-          const worldCenter =
-            worldBox.getCenter(
-              new THREE.Vector3(),
+        const rootWorld =
+          clonedScene.getWorldPosition(
+            new THREE.Vector3(),
+          );
+
+        const parent =
+          centeringRef.current.parent;
+
+        if (parent) {
+          const p0 =
+            parent.worldToLocal(
+              rootWorld.clone(),
             );
 
-          const rootWorld =
-            clonedScene.getWorldPosition(
-              new THREE.Vector3(),
+          const p1 =
+            parent.worldToLocal(
+              worldCenter.clone(),
             );
 
-          const parent =
-            centeringRef.current.parent;
+          centeringRef.current.position.copy(
+            p0.sub(p1),
+          );
+        } else {
+          centeringRef.current.position.set(
+            -worldCenter.x,
+            -worldCenter.y,
+            -worldCenter.z,
+          );
+        }
+      }
 
-          if (parent) {
-            const p0 =
-              parent.worldToLocal(
-                rootWorld.clone(),
-              );
+      const localBox =
+        getRootLocalBounds(
+          clonedScene,
+        );
 
-            const p1 =
-              parent.worldToLocal(
-                worldCenter.clone(),
-              );
+      rootLocalSize.current.copy(
+        localBox.getSize(
+          new THREE.Vector3(),
+        ),
+      );
 
-            centeringRef.current.position.copy(
-              p0.sub(p1),
-            );
-          } else {
-            centeringRef.current.position.set(
-              -worldCenter.x,
-              -worldCenter.y,
-              -worldCenter.z,
-            );
-          }
+      const ordered =
+        [...BURGER_LAYERS].sort(
+          (a, b) => a.index - b.index,
+        );
+
+      const resolved: Array<{
+        layer: BurgerLayer;
+        object: THREE.Object3D;
+      }> = [];
+
+      ordered.forEach((layer) => {
+        const object =
+          clonedScene.getObjectByName(
+            layer.objectName,
+          );
+
+        if (!object) {
+          console.warn(
+            '[BurgerStory] unresolved',
+            layer.key,
+            layer.objectName,
+          );
+          return;
         }
 
-        const localBox =
-          getRootLocalBounds(
-            clonedScene,
-          );
+        resolved.push({
+          layer,
+          object,
+        });
+      });
 
-        rootLocalSize.current.copy(
-          localBox.getSize(
-            new THREE.Vector3(),
-          ),
+      resolvedOrder.current =
+        resolved.map(
+          ({ layer }) => layer,
         );
 
-        const ordered =
-          [...BURGER_LAYERS].sort(
-            (a, b) =>
-              a.index -
-              b.index,
-          );
+      const count =
+        Math.max(1, resolved.length);
 
-        const resolved:
-          Array<{
-            layer: BurgerLayer;
-            object: THREE.Object3D;
-          }> = [];
-
-        ordered.forEach(
-          (layer) => {
-            const object =
-              clonedScene.getObjectByName(
-                layer.objectName,
-              );
-
-            if (!object) {
-              console.warn(
-                '[BurgerStory] unresolved',
-                layer.key,
-                layer.objectName,
-              );
-
-              return;
-            }
-
-            resolved.push({
-              layer,
-              object,
-            });
-          },
+      const burgerWidth =
+        Math.max(
+          rootLocalSize.current.x,
+          0.001,
         );
 
-        resolvedOrder.current =
-          resolved.map(
-            ({ layer }) =>
-              layer,
+      const burgerHeight =
+        Math.max(
+          rootLocalSize.current.y,
+          0.001,
+        );
+
+      const burgerDepth =
+        Math.max(
+          rootLocalSize.current.z,
+          0.001,
+        );
+
+      resolved.forEach(
+        ({ layer, object }, index) => {
+          resolvedNodes.current.set(
+            layer.key,
+            object,
           );
 
-        const count =
-          Math.max(
-            1,
-            resolved.length,
+          semanticObjectToLayer.current.set(
+            object.uuid,
+            layer.key,
           );
 
-        const burgerWidth =
-          Math.max(
-            rootLocalSize.current.x,
-            0.001,
+          originalTransforms.current.set(
+            layer.key,
+            {
+              position:
+                object.position.clone(),
+
+              quaternion:
+                object.quaternion.clone(),
+
+              scale:
+                object.scale.clone(),
+            },
           );
 
-        const burgerHeight =
-          Math.max(
-            rootLocalSize.current.y,
-            0.001,
+          timings.current.set(
+            layer.key,
+            getStoryLayerTiming(
+              index,
+              count,
+            ),
           );
 
-        const burgerDepth =
-          Math.max(
-            rootLocalSize.current.z,
-            0.001,
-          );
-
-        resolved.forEach(
-          (
-            { layer, object },
-            index,
-          ) => {
-            resolvedNodes.current.set(
-              layer.key,
-              object,
+          const directionX =
+            THREE.MathUtils.clamp(
+              layer.explosionDir.x,
+              -1,
+              1,
             );
 
-            originalTransforms.current.set(
-              layer.key,
-              {
-                position:
-                  object.position.clone(),
-
-                quaternion:
-                  object.quaternion.clone(),
-
-                scale:
-                  object.scale.clone(),
-              },
+          const directionY =
+            THREE.MathUtils.clamp(
+              layer.explosionDir.y,
+              -1,
+              1,
             );
 
-            timings.current.set(
-              layer.key,
-              getStoryLayerTiming(
-                index,
-                count,
-              ),
-            );
+          /**
+           * Large explosion, but deliberately bounded.
+           * Bigger Story scale supplies the visual dominance; these offsets
+           * keep parts within the center portion of the viewport.
+           */
+          const rootExplosion =
+            new THREE.Vector3(
+              directionX *
+                burgerWidth *
+                0.64,
 
-            /**
-             * Use each semantic layer's intended direction from burgerLayers.ts.
-             * Scale from actual burger bounds so the explosion reads clearly.
-             */
-            const directionX =
-              THREE.MathUtils.clamp(
-                layer.explosionDir.x,
-                -1,
-                1,
-              );
-
-            const directionY =
-              THREE.MathUtils.clamp(
-                layer.explosionDir.y,
-                -1,
-                1,
-              );
-
-            const rootExplosion =
-              new THREE.Vector3(
-                directionX *
-                  burgerWidth *
-                  0.76,
-
-                directionY *
-                  burgerHeight *
-                  0.44,
-
-                ((index % 3) -
-                  1) *
-                  burgerDepth *
-                  0.10,
-              );
-
-            /**
-             * Rebuild entrance is LOCAL to each ingredient.
-             * It does not start at the navbar or top of the viewport.
-             */
-            const rootIncoming =
-              new THREE.Vector3(
-                0,
+              directionY *
                 burgerHeight *
-                  0.34,
-                0,
-              );
+                0.42,
 
-            motionTargets.current.set(
-              layer.key,
-              {
-                explosionDelta:
-                  rootLocalDeltaToParentLocal(
-                    clonedScene,
-                    object,
-                    rootExplosion,
-                  ),
-
-                incomingDelta:
-                  rootLocalDeltaToParentLocal(
-                    clonedScene,
-                    object,
-                    rootIncoming,
-                  ),
-
-                focusUpper:
-                  rootLocalDeltaToParentLocal(
-                    clonedScene,
-                    object,
-                    new THREE.Vector3(
-                      0,
-                      burgerHeight *
-                        0.13,
-                      0,
-                    ),
-                  ),
-
-                focusLower:
-                  rootLocalDeltaToParentLocal(
-                    clonedScene,
-                    object,
-                    new THREE.Vector3(
-                      0,
-                      -burgerHeight *
-                        0.13,
-                      0,
-                    ),
-                  ),
-
-                focusActive:
-                  rootLocalDeltaToParentLocal(
-                    clonedScene,
-                    object,
-                    new THREE.Vector3(
-                      0,
-                      0,
-                      burgerDepth *
-                        0.15,
-                    ),
-                  ),
-              },
+              ((index % 3) - 1) *
+                burgerDepth *
+                0.10,
             );
 
-            focusOffsets.current.set(
-              layer.key,
-              {
-                upper: 0,
-                lower: 0,
-                active: 0,
-              },
+          const rootIncoming =
+            new THREE.Vector3(
+              0,
+              burgerHeight * 0.36,
+              0,
             );
 
-            /**
-             * Use custom anchor when supplied (e.g. BunBottom),
-             * otherwise use the visible world bounding-box center.
-             */
-            let worldAnchor:
-              THREE.Vector3;
-
-            if (
-              layer.getAnchor
-            ) {
-              worldAnchor =
-                layer.getAnchor(
+          motionTargets.current.set(
+            layer.key,
+            {
+              explosionDelta:
+                rootLocalDeltaToParentLocal(
+                  clonedScene,
                   object,
-                );
-            } else {
-              worldAnchor =
-                getLayerWorldBoxCenter(
+                  rootExplosion,
+                ),
+
+              incomingDelta:
+                rootLocalDeltaToParentLocal(
+                  clonedScene,
                   object,
-                );
-            }
+                  rootIncoming,
+                ),
 
-            const localAnchor =
-              object.worldToLocal(
-                worldAnchor.clone(),
-              );
+              focusUpper:
+                rootLocalDeltaToParentLocal(
+                  clonedScene,
+                  object,
+                  new THREE.Vector3(
+                    0,
+                    burgerHeight * 0.13,
+                    0,
+                  ),
+                ),
 
-            anchorLocalPoints.current.set(
-              layer.key,
-              localAnchor,
-            );
+              focusLower:
+                rootLocalDeltaToParentLocal(
+                  clonedScene,
+                  object,
+                  new THREE.Vector3(
+                    0,
+                    -burgerHeight * 0.13,
+                    0,
+                  ),
+                ),
 
-            const objectBox =
-              new THREE.Box3().setFromObject(
+              focusActive:
+                rootLocalDeltaToParentLocal(
+                  clonedScene,
+                  object,
+                  new THREE.Vector3(
+                    0,
+                    0,
+                    burgerDepth * 0.15,
+                  ),
+                ),
+            },
+          );
+
+          focusOffsets.current.set(
+            layer.key,
+            {
+              upper: 0,
+              lower: 0,
+              active: 0,
+            },
+          );
+
+          partRotations.current.set(
+            layer.key,
+            {
+              targetX: 0,
+              targetY: 0,
+              currentX: 0,
+              currentY: 0,
+            },
+          );
+
+          let worldAnchor:
+            THREE.Vector3;
+
+          if (layer.getAnchor) {
+            worldAnchor =
+              layer.getAnchor(object);
+          } else {
+            worldAnchor =
+              getLayerWorldBoxCenter(
                 object,
               );
+          }
 
-            const objectSize =
-              objectBox.getSize(
-                new THREE.Vector3(),
-              );
-
-            anchorWorldRadii.current.set(
-              layer.key,
-              Math.max(
-                objectSize.x,
-                objectSize.z,
-                0.02,
-              ) * 0.5,
+          const localAnchor =
+            object.worldToLocal(
+              worldAnchor.clone(),
             );
-          },
-        );
 
-        console.info(
-          '[BurgerStory] ready',
-          {
-            configured:
-              BURGER_LAYERS.length,
+          anchorLocalPoints.current.set(
+            layer.key,
+            localAnchor,
+          );
 
-            resolved:
-              resolved.length,
+          const objectBox =
+            new THREE.Box3().setFromObject(
+              object,
+            );
 
-            rootLocalSize:
-              rootLocalSize.current.toArray(),
+          const objectSize =
+            objectBox.getSize(
+              new THREE.Vector3(),
+            );
 
-            timings:
-              resolved.map(
-                (
-                  { layer },
-                  index,
-                ) => ({
-                  key:
-                    layer.key,
+          anchorWorldRadii.current.set(
+            layer.key,
+            Math.max(
+              objectSize.x,
+              objectSize.z,
+              0.02,
+            ) * 0.5,
+          );
+        },
+      );
 
-                  ...getStoryLayerTiming(
-                    index,
-                    resolved.length,
-                  ),
-                }),
-              ),
-          },
-        );
+      console.info(
+        '[BurgerStory] ready',
+        {
+          configured:
+            BURGER_LAYERS.length,
 
-        onResolvedLayers?.(
-          resolvedOrder.current,
-        );
-      }, [
-        clonedScene,
-        onResolvedLayers,
-      ]);
+          resolved:
+            resolved.length,
 
-      const getPresentationConfig = (
-        viewportWidth: number,
-      ) => {
-        if (
-          viewportWidth >=
-          BREAKPOINTS.desktop
-        ) {
-          return PRESENTATION.desktop;
+          rootLocalSize:
+            rootLocalSize.current.toArray(),
+        },
+      );
+
+      onResolvedLayers?.(
+        resolvedOrder.current,
+      );
+    }, [
+      clonedScene,
+      onResolvedLayers,
+    ]);
+
+    const getPresentationConfig = (
+      viewportWidth: number,
+    ) => {
+      if (
+        viewportWidth >=
+        BREAKPOINTS.desktop
+      ) {
+        return PRESENTATION.desktop;
+      }
+
+      if (
+        viewportWidth >=
+        BREAKPOINTS.tablet
+      ) {
+        return PRESENTATION.tablet;
+      }
+
+      return PRESENTATION.mobile;
+    };
+
+    const getProgress = () =>
+      mode === 'configurator'
+        ? 1
+        : clamp01(
+            externalProgressRef?.current ??
+              internalProgressRef.current,
+          );
+
+    const findSemanticLayer = (
+      object: THREE.Object3D | null,
+    ): LayerName | null => {
+      let current:
+        THREE.Object3D | null =
+        object;
+
+      while (current) {
+        const key =
+          semanticObjectToLayer.current.get(
+            current.uuid,
+          );
+
+        if (key) {
+          return key;
         }
 
         if (
-          viewportWidth >=
-          BREAKPOINTS.tablet
+          current ===
+          clonedScene
         ) {
-          return PRESENTATION.tablet;
+          break;
         }
 
-        return PRESENTATION.mobile;
-      };
+        current =
+          current.parent;
+      }
 
-      useFrame((state) => {
+      return null;
+    };
+
+    const isExplosionInteractive = (
+      progress: number,
+    ) =>
+      mode === 'story' &&
+      progress >=
+        BURGER_STORY_PHASES.CENTER_HOLD_END &&
+      progress <=
+        BURGER_STORY_PHASES.CROSSOVER_END;
+
+    const isWholeBurgerInteractive = (
+      progress: number,
+    ) => {
+      if (mode === 'configurator') {
+        return true;
+      }
+
+      return (
+        progress <=
+          BURGER_STORY_PHASES.CENTER_HOLD_END ||
+        isExplosionInteractive(progress) ||
+        progress >=
+          BURGER_STORY_PHASES.REBUILD_END
+      );
+    };
+
+    const setCursor = (
+      cursor: string,
+    ) => {
+      gl.domElement.style.cursor =
+        cursor;
+    };
+
+    const getClientPoint = (
+      event: any,
+    ) => ({
+      x:
+        event.clientX ??
+        event.nativeEvent?.clientX ??
+        0,
+
+      y:
+        event.clientY ??
+        event.nativeEvent?.clientY ??
+        0,
+    });
+
+    const startDrag = (
+      event: any,
+      forceWhole = false,
+    ) => {
+      const progress =
+        getProgress();
+
+      const point =
+        getClientPoint(
+          event,
+        );
+
+      const semanticLayer =
+        !forceWhole &&
+        isExplosionInteractive(
+          progress,
+        )
+          ? findSemanticLayer(
+              event.object ??
+                null,
+            )
+          : null;
+
+      if (semanticLayer) {
+        dragRef.current = {
+          dragging: true,
+          kind: 'part',
+          layerKey:
+            semanticLayer,
+          pointerId:
+            event.pointerId ??
+            null,
+          lastX: point.x,
+          lastY: point.y,
+        };
+      } else if (
+        isWholeBurgerInteractive(
+          progress,
+        )
+      ) {
+        dragRef.current = {
+          dragging: true,
+          kind: 'whole',
+          layerKey: null,
+          pointerId:
+            event.pointerId ??
+            null,
+          lastX: point.x,
+          lastY: point.y,
+        };
+      } else {
+        return;
+      }
+
+      event.stopPropagation?.();
+
+      try {
+        event.target?.setPointerCapture?.(
+          event.pointerId,
+        );
+      } catch {
+        try {
+          gl.domElement.setPointerCapture(
+            event.pointerId,
+          );
+        } catch {
+          // Safe fallback.
+        }
+      }
+
+      setCursor('grabbing');
+    };
+
+    const moveDrag = (
+      event: any,
+    ) => {
+      const drag =
+        dragRef.current;
+
+      if (!drag.dragging) {
+        return;
+      }
+
+      const point =
+        getClientPoint(
+          event,
+        );
+
+      const dx =
+        point.x -
+        drag.lastX;
+
+      const dy =
+        point.y -
+        drag.lastY;
+
+      drag.lastX =
+        point.x;
+
+      drag.lastY =
+        point.y;
+
+      if (
+        drag.kind ===
+        'part' &&
+        drag.layerKey
+      ) {
+        const rotation =
+          partRotations.current.get(
+            drag.layerKey,
+          );
+
+        if (rotation) {
+          rotation.targetY =
+            THREE.MathUtils.clamp(
+              rotation.targetY +
+                dx * 0.016,
+              -1.05,
+              1.05,
+            );
+
+          rotation.targetX =
+            THREE.MathUtils.clamp(
+              rotation.targetX +
+                dy * 0.008,
+              -0.36,
+              0.36,
+            );
+        }
+      } else if (
+        drag.kind ===
+        'whole'
+      ) {
+        manualTarget.current.y =
+          THREE.MathUtils.clamp(
+            manualTarget.current.y +
+              dx * 0.013,
+            -0.95,
+            0.95,
+          );
+
+        manualTarget.current.x =
+          THREE.MathUtils.clamp(
+            manualTarget.current.x +
+              dy * 0.006,
+            -0.24,
+            0.24,
+          );
+      }
+
+      event.stopPropagation?.();
+    };
+
+    const stopDrag = (
+      event?: any,
+    ) => {
+      if (
+        !dragRef.current.dragging
+      ) {
+        return;
+      }
+
+      dragRef.current.dragging =
+        false;
+
+      dragRef.current.kind =
+        null;
+
+      dragRef.current.layerKey =
+        null;
+
+      try {
+        event?.target?.releasePointerCapture?.(
+          event.pointerId,
+        );
+      } catch {
+        // Safe fallback.
+      }
+
+      setCursor('grab');
+    };
+
+    const resetManualRotation = () => {
+      manualTarget.current.x =
+        0;
+
+      manualTarget.current.y =
+        0;
+
+      partRotations.current.forEach(
+        (rotation) => {
+          rotation.targetX =
+            0;
+
+          rotation.targetY =
+            0;
+        },
+      );
+    };
+
+    useFrame(
+      (state, delta) => {
         const progress =
-          mode ===
-          'configurator'
-            ? 1
-            : clamp01(
-                externalProgressRef?.current ??
-                  internalProgressRef.current,
-              );
+          getProgress();
 
         const presentation =
           getPresentationConfig(
@@ -906,9 +1085,6 @@ export const GLBBurgerModel =
         const perspective =
           state.camera as THREE.PerspectiveCamera;
 
-        /**
-         * Camera only transitions during Hero -> Story centering.
-         */
         const cameraT =
           easeInOutCubic(
             rangeProgress(
@@ -939,45 +1115,39 @@ export const GLBBurgerModel =
           0,
         );
 
-        /**
-         * PresentationRoot:
-         * - Hero has its own position/scale.
-         * - It transitions once into Story.
-         * - Once centered, it remains locked throughout explosion/rebuild/final.
-         */
         if (
           presentationRef.current
         ) {
           if (
             mode === 'story'
           ) {
-            const HERO_Y =
+            const heroY =
               presentation.hero.y;
 
-            const STORY_Y =
+            const storyY =
               presentation.story.y;
 
-            const HERO_SCALE =
+            const heroScale =
               presentation.hero.scale;
 
-            const STORY_SCALE =
+            const storyScale =
               presentation.story.scale;
 
             let currentY =
-              HERO_Y;
+              heroY;
 
             let currentScale =
-              HERO_SCALE;
+              heroScale;
 
             if (
               progress <=
               BURGER_STORY_PHASES.HERO_END
             ) {
               currentY =
-                HERO_Y;
+                heroY;
 
               currentScale =
-                HERO_SCALE;
+                heroScale;
             } else if (
               progress <=
               BURGER_STORY_PHASES.CENTERING_END
@@ -993,23 +1163,23 @@ export const GLBBurgerModel =
 
               currentY =
                 THREE.MathUtils.lerp(
-                  HERO_Y,
-                  STORY_Y,
+                  heroY,
+                  storyY,
                   t,
                 );
 
               currentScale =
                 THREE.MathUtils.lerp(
-                  HERO_SCALE,
-                  STORY_SCALE,
+                  heroScale,
+                  storyScale,
                   t,
                 );
             } else {
               currentY =
-                STORY_Y;
+                storyY;
 
               currentScale =
-                STORY_SCALE;
+                storyScale;
             }
 
             presentationRef.current.position.set(
@@ -1037,7 +1207,92 @@ export const GLBBurgerModel =
           }
         }
 
-        let visibleCount = 0;
+        /**
+         * Whole-composition drag stays responsive in Hero, explosion and final.
+         * During the short magnetic reassembly we gently return to front view.
+         */
+        if (
+          mode === 'story' &&
+          progress > BURGER_STORY_PHASES.CROSSOVER_END &&
+          progress < BURGER_STORY_PHASES.REBUILD_END
+        ) {
+          manualTarget.current.x = THREE.MathUtils.damp(
+            manualTarget.current.x,
+            0,
+            10,
+            delta,
+          );
+          manualTarget.current.y = THREE.MathUtils.damp(
+            manualTarget.current.y,
+            0,
+            10,
+            delta,
+          );
+        }
+
+        if (manualRotationRef.current) {
+          manualRotationRef.current.rotation.x = THREE.MathUtils.damp(
+            manualRotationRef.current.rotation.x,
+            manualTarget.current.x,
+            16,
+            delta,
+          );
+          manualRotationRef.current.rotation.y = THREE.MathUtils.damp(
+            manualRotationRef.current.rotation.y,
+            manualTarget.current.y,
+            16,
+            delta,
+          );
+        }
+
+        /**
+         * Per-ingredient rotations are inspectable only while exploded.
+         * Once rebuild begins they smoothly reset.
+         */
+        partRotations.current.forEach(
+          (rotation) => {
+            if (
+              mode === 'story' &&
+              progress >
+                BURGER_STORY_PHASES.CROSSOVER_END
+            ) {
+              rotation.targetX =
+                THREE.MathUtils.damp(
+                  rotation.targetX,
+                  0,
+                  11,
+                  delta,
+                );
+
+              rotation.targetY =
+                THREE.MathUtils.damp(
+                  rotation.targetY,
+                  0,
+                  11,
+                  delta,
+                );
+            }
+
+            rotation.currentX =
+              THREE.MathUtils.damp(
+                rotation.currentX,
+                rotation.targetX,
+                11,
+                delta,
+              );
+
+            rotation.currentY =
+              THREE.MathUtils.damp(
+                rotation.currentY,
+                rotation.targetY,
+                11,
+                delta,
+              );
+          },
+        );
+
+        let visibleCount =
+          0;
 
         resolvedOrder.current.forEach(
           (
@@ -1073,10 +1328,6 @@ export const GLBBurgerModel =
               return;
             }
 
-            /**
-             * PURE / deterministic:
-             * restore the exact Blender transform every frame.
-             */
             object.position.copy(
               original.position,
             );
@@ -1095,21 +1346,13 @@ export const GLBBurgerModel =
             if (
               mode === 'story'
             ) {
-              /**
-               * HERO + CENTERING + CENTER HOLD
-               * Always show the complete assembled burger.
-               */
               if (
                 progress <=
                 BURGER_STORY_PHASES.CENTER_HOLD_END
               ) {
-                object.visible =
-                  true;
+                // Fully assembled Hero / centered burger.
               }
 
-              /**
-               * EXPLOSION
-               */
               else if (
                 progress <=
                 BURGER_STORY_PHASES.EXPLOSION_END
@@ -1133,13 +1376,11 @@ export const GLBBurgerModel =
                   );
               }
 
-              /**
-               * MAX EXPLOSION HOLD
-               */
               else if (
                 progress <=
                 BURGER_STORY_PHASES.CROSSOVER_END
               ) {
+                // Full exploded inspection hold.
                 object.position
                   .copy(
                     original.position,
@@ -1149,215 +1390,101 @@ export const GLBBurgerModel =
                   );
               }
 
-              /**
-               * REBUILD + FINAL
-               */
+              else if (
+                progress <=
+                BURGER_STORY_PHASES.REBUILD_END
+              ) {
+                // Synchronized magnetic reassembly:
+                // every ingredient returns together instead of stacking one-by-one.
+                const returnT = easeInOutCubic(
+                  rangeProgress(
+                    progress,
+                    BURGER_STORY_PHASES.CROSSOVER_END,
+                    BURGER_STORY_PHASES.REBUILD_END,
+                  ),
+                );
+
+                // Slight magnetic acceleration near the end makes the pieces
+                // feel pulled together without introducing another "stack" section.
+                const magneticT = 1 - Math.pow(1 - returnT, 2.35);
+
+                object.visible = true;
+                object.position
+                  .copy(original.position)
+                  .addScaledVector(
+                    motion.explosionDelta,
+                    1 - magneticT,
+                  );
+
+                // Tiny settle pulse at convergence; all parts still finish at
+                // their exact original Blender transforms.
+                const settlePulse =
+                  Math.sin(returnT * Math.PI) * 0.012;
+
+                object.scale.set(
+                  original.scale.x * (1 + settlePulse),
+                  original.scale.y * (1 - settlePulse * 0.55),
+                  original.scale.z * (1 + settlePulse),
+                );
+              }
+
               else {
-                if (
-                  progress <
-                  timing.buildStart
-                ) {
-                  object.visible =
-                    false;
-                }
-
-                else if (
-                  progress <=
-                  timing.buildEnd
-                ) {
-                  const buildT =
-                    rangeProgress(
-                      progress,
-                      timing.buildStart,
-                      timing.buildEnd,
-                    );
-
-                  /**
-                   * Different ingredients feel differently weighted.
-                   */
-                  let impactStrength =
-                    0.55;
-
-                  const name =
-                    layer.objectName.toLowerCase();
-
-                  if (
-                    name.includes(
-                      'bun',
-                    ) ||
-                    name.includes(
-                      'brioche',
-                    )
-                  ) {
-                    impactStrength =
-                      1.0;
-                  }
-
-                  if (
-                    name.includes(
-                      'beef',
-                    ) ||
-                    name.includes(
-                      'patty',
-                    ) ||
-                    name.includes(
-                      'smash',
-                    )
-                  ) {
-                    impactStrength =
-                      1.15;
-                  }
-
-                  if (
-                    name.includes(
-                      'cheese',
-                    ) ||
-                    name.includes(
-                      'jack',
-                    ) ||
-                    name.includes(
-                      'cheddar',
-                    )
-                  ) {
-                    impactStrength =
-                      0.75;
-                  }
-
-                  /**
-                   * A) HEAVY DROP
-                   */
-                  if (
-                    buildT <
-                    0.72
-                  ) {
-                    const t =
-                      buildT /
-                      0.72;
-
-                    // Fast acceleration into the stack.
-                    const gravity =
-                      1 -
-                      Math.pow(
-                        1 - t,
-                        4,
-                      );
-
-                    object.position
-                      .copy(
-                        original.position,
-                      )
-                      .addScaledVector(
-                        motion.incomingDelta,
-                        1 - gravity,
-                      );
-                  }
-
-                  /**
-                   * B) IMPACT / SQUASH
-                   */
-                  else if (
-                    buildT <
-                    0.84
-                  ) {
-                    const impactT =
-                      (buildT -
-                        0.72) /
-                      0.12;
-
-                    const squash =
-                      Math.sin(
-                        impactT *
-                          Math.PI,
-                      ) *
-                      impactStrength;
-
-                    object.position.copy(
-                      original.position,
-                    );
-
-                    object.scale.set(
-                      original.scale.x *
-                        (
-                          1 +
-                          0.035 *
-                            squash
-                        ),
-
-                      original.scale.y *
-                        (
-                          1 -
-                          0.045 *
-                            squash
-                        ),
-
-                      original.scale.z *
-                        (
-                          1 +
-                          0.035 *
-                            squash
-                        ),
-                    );
-                  }
-
-                  /**
-                   * C) SMALL REBOUND / SETTLE
-                   */
-                  else {
-                    const settleT =
-                      (buildT -
-                        0.84) /
-                      0.16;
-
-                    const bounce =
-                      Math.sin(
-                        settleT *
-                          Math.PI *
-                          2,
-                      ) *
-                      (1 -
-                        settleT) *
-                      impactStrength;
-
-                    object.position.copy(
-                      original.position,
-                    );
-
-                    object.position.addScaledVector(
-                      motion.incomingDelta,
-                      bounce *
-                        0.045,
-                    );
-
-                    object.scale.copy(
-                      original.scale,
-                    );
-                  }
-                }
-
-                /**
-                 * Finished layer:
-                 * lock exactly to original Blender transform.
-                 */
-                else {
-                  object.visible =
-                    true;
-
-                  object.position.copy(
-                    original.position,
-                  );
-
-                  object.quaternion.copy(
-                    original.quaternion,
-                  );
-
-                  object.scale.copy(
-                    original.scale,
-                  );
-                }
+                // Final exact Blender assembly. This state is intentionally brief;
+                // the pin releases immediately into the Configurator.
+                object.visible = true;
+                object.position.copy(original.position);
+                object.quaternion.copy(original.quaternion);
+                object.scale.copy(original.scale);
               }
 
               /**
-               * Click focus after final assembly.
+               * Apply the user's exploded-part inspection rotation AFTER
+               * story position is calculated.
+               */
+              const partRotation =
+                partRotations.current.get(
+                  layer.key,
+                );
+
+              if (
+                partRotation &&
+                (
+                  isExplosionInteractive(
+                    progress,
+                  ) ||
+                  Math.abs(
+                    partRotation.currentX,
+                  ) >
+                    0.0001 ||
+                  Math.abs(
+                    partRotation.currentY,
+                  ) >
+                    0.0001
+                )
+              ) {
+                tempEuler.current.set(
+                  partRotation.currentX,
+                  partRotation.currentY,
+                  0,
+                  'XYZ',
+                );
+
+                tempQuaternion.current.setFromEuler(
+                  tempEuler.current,
+                );
+
+                object.quaternion
+                  .copy(
+                    original.quaternion,
+                  )
+                  .multiply(
+                    tempQuaternion.current,
+                  );
+              }
+
+              /**
+               * Existing final click-focus support remains intact if a caller
+               * still passes activeLayer.
                */
               const offsets =
                 focusOffsets.current.get(
@@ -1382,9 +1509,7 @@ export const GLBBurgerModel =
                 ) {
                   const activeIndex =
                     resolvedOrder.current.findIndex(
-                      (
-                        candidate,
-                      ) =>
+                      (candidate) =>
                         candidate.key ===
                         activeLayer,
                     );
@@ -1408,24 +1533,27 @@ export const GLBBurgerModel =
                 }
 
                 offsets.upper =
-                  THREE.MathUtils.lerp(
+                  THREE.MathUtils.damp(
                     offsets.upper,
                     upperTarget,
-                    0.10,
+                    10,
+                    delta,
                   );
 
                 offsets.lower =
-                  THREE.MathUtils.lerp(
+                  THREE.MathUtils.damp(
                     offsets.lower,
                     lowerTarget,
-                    0.10,
+                    10,
+                    delta,
                   );
 
                 offsets.active =
-                  THREE.MathUtils.lerp(
+                  THREE.MathUtils.damp(
                     offsets.active,
                     activeTarget,
-                    0.10,
+                    10,
+                    delta,
                   );
 
                 object.position.addScaledVector(
@@ -1454,10 +1582,6 @@ export const GLBBurgerModel =
           },
         );
 
-        /**
-         * Development safety:
-         * the Story should never have zero visible layers.
-         */
         if (
           import.meta.env.DEV &&
           mode === 'story' &&
@@ -1472,68 +1596,34 @@ export const GLBBurgerModel =
         }
 
         /**
-         * Click-focus yaw only.
-         * Story transforms do not accumulate here.
-         */
-        if (
-          presentationRef.current
-        ) {
-          const focusLayer =
-            resolvedOrder.current.find(
-              (layer) =>
-                layer.key ===
-                activeLayer,
-            );
-
-          const targetRotationY =
-            mode === 'story' &&
-            activeLayer &&
-            progress >=
-              BURGER_STORY_PHASES.REBUILD_END
-              ? focusLayer?.align ===
-                'left'
-                ? -0.2007
-                : 0.2007
-              : 0;
-
-          presentationRef.current.rotation.y =
-            THREE.MathUtils.lerp(
-              presentationRef.current.rotation.y,
-              targetRotationY,
-              0.09,
-            );
-        }
-
-        /**
-         * Wave / idle motion:
-         * - Hero assembled burger
-         * - Final assembled Story burger
-         * - Configurator burger
+         * Complete burgers always feel alive.
          *
-         * Disabled during explosion/rebuild so it cannot fight story motion.
+         * Story wave is disabled while exploded/rebuilding.
+         * Configurator already has an outer hover animation, but this component
+         * can also supply a tiny live motion when enableIdleAnimation=true.
          */
         if (
           floatingRef.current
         ) {
           const reduceMotion =
-            typeof window !==
-              'undefined' &&
+            typeof window !== 'undefined' &&
             window.matchMedia(
               '(prefers-reduced-motion: reduce)',
             ).matches;
 
-          const fullBurgerPhase =
-            mode ===
-              'configurator' ||
+          const assembledStory =
             progress <=
-              BURGER_STORY_PHASES.HERO_END ||
+              BURGER_STORY_PHASES.CENTER_HOLD_END ||
             progress >=
-              BURGER_STORY_PHASES.FINAL_SETTLE_END;
+              BURGER_STORY_PHASES.REBUILD_END;
 
           const allowIdle =
             enableIdleAnimation &&
             !reduceMotion &&
-            fullBurgerPhase;
+            (
+              mode === 'configurator' ||
+              assembledStory
+            );
 
           const elapsed =
             state.clock.getElapsedTime();
@@ -1541,45 +1631,51 @@ export const GLBBurgerModel =
           floatingRef.current.position.y =
             allowIdle
               ? Math.sin(
-                  elapsed *
-                    0.72,
-                ) *
-                0.055
+                  elapsed * 0.78,
+                ) * 0.085
+              : 0;
+
+          floatingRef.current.rotation.y =
+            allowIdle
+              ? Math.sin(
+                  elapsed * 0.34,
+                ) * 0.038
               : 0;
 
           floatingRef.current.rotation.z =
             allowIdle
               ? Math.cos(
-                  elapsed *
-                    0.43,
-                ) *
-                0.007
+                  elapsed * 0.46,
+                ) * 0.013
               : 0;
 
           floatingRef.current.rotation.x =
             allowIdle
               ? Math.sin(
-                  elapsed *
-                    0.31,
-                ) *
-                0.004
+                  elapsed * 0.30,
+                ) * 0.010
               : 0;
+
+          const liveScale = allowIdle
+            ? 1 + Math.sin(elapsed * 0.52) * 0.006
+            : 1;
+          floatingRef.current.scale.setScalar(liveScale);
         }
 
         /**
-         * Project visible layer anchors to the Story Canvas.
-         * Hero does not need label anchors.
+         * Project anchors only during the exploded inspection state.
+         * Labels disappear before magnetic reassembly.
          */
+        const needsExplosionAnchors =
+          mode === 'story' &&
+          progress >= 0.40 &&
+          progress <=
+            BURGER_STORY_PHASES.CROSSOVER_END + 0.005;
+
         if (
           onPositionsUpdate &&
           presentationRef.current &&
-          (
-            mode ===
-              'configurator' ||
-            progress >=
-              BURGER_STORY_PHASES.CROSSOVER_END -
-                0.01
-          )
+          needsExplosionAnchors
         ) {
           presentationRef.current.updateWorldMatrix(
             true,
@@ -1589,15 +1685,14 @@ export const GLBBurgerModel =
           const rect =
             gl.domElement.getBoundingClientRect();
 
-          const positions:
-            Record<
-              string,
-              {
-                x: number;
-                y: number;
-                r: number;
-              }
-            > = {};
+          const positions: Record<
+            string,
+            {
+              x: number;
+              y: number;
+              r: number;
+            }
+          > = {};
 
           resolvedOrder.current.forEach(
             (layer) => {
@@ -1648,8 +1743,10 @@ export const GLBBurgerModel =
                 !Number.isFinite(
                   projected.z,
                 ) ||
-                projected.z < -1 ||
-                projected.z > 1
+                projected.z <
+                  -1 ||
+                projected.z >
+                  1
               ) {
                 return;
               }
@@ -1675,9 +1772,6 @@ export const GLBBurgerModel =
                   layer.key,
                 ) ?? 0.1;
 
-              /**
-               * Approximate a screen radius for connector start offset.
-               */
               const rightWorld =
                 world
                   .clone()
@@ -1703,12 +1797,8 @@ export const GLBBurgerModel =
                 rect.width;
 
               if (
-                Number.isFinite(
-                  x,
-                ) &&
-                Number.isFinite(
-                  y,
-                )
+                Number.isFinite(x) &&
+                Number.isFinite(y)
               ) {
                 positions[layer.key] = {
                   x,
@@ -1716,8 +1806,7 @@ export const GLBBurgerModel =
                   r: Math.max(
                     5,
                     Math.abs(
-                      rightX -
-                        x,
+                      rightX - x,
                     ),
                   ),
                 };
@@ -1729,52 +1818,187 @@ export const GLBBurgerModel =
             positions,
           );
         }
-      });
+      },
+    );
 
-      useImperativeHandle(
-        ref,
-        () => ({
-          get presentationGroup() {
-            return presentationRef.current;
-          },
+    useImperativeHandle(
+      ref,
+      () => ({
+        get presentationGroup() {
+          return presentationRef.current;
+        },
 
-          setScrollProgress(
-            value: number,
+        setScrollProgress(
+          value: number,
+        ) {
+          internalProgressRef.current =
+            clamp01(value);
+        },
+
+        getScrollProgress() {
+          return (
+            externalProgressRef?.current ??
+            internalProgressRef.current
+          );
+        },
+
+        resetManualRotation,
+      }),
+    );
+
+    const commonModelEvents = {
+      onPointerDown:
+        (event: any) =>
+          startDrag(
+            event,
+            false,
+          ),
+
+      onPointerMove:
+        (event: any) =>
+          moveDrag(event),
+
+      onPointerUp:
+        (event: any) =>
+          stopDrag(event),
+
+      onPointerCancel:
+        (event: any) =>
+          stopDrag(event),
+
+      onPointerOver:
+        (event: any) => {
+          event.stopPropagation?.();
+
+          if (
+            !dragRef.current.dragging
           ) {
-            internalProgressRef.current =
-              clamp01(value);
-          },
+            setCursor('grab');
+          }
+        },
 
-          getScrollProgress() {
-            return (
-              externalProgressRef?.current ??
-              internalProgressRef.current
-            );
-          },
-        }),
-      );
+      onPointerOut:
+        () => {
+          if (
+            !dragRef.current.dragging
+          ) {
+            setCursor('');
+          }
+        },
 
-      return (
+      onDoubleClick:
+        (event: any) => {
+          event.stopPropagation?.();
+
+          const progress =
+            getProgress();
+
+          const layer =
+            isExplosionInteractive(
+              progress,
+            )
+              ? findSemanticLayer(
+                  event.object ??
+                    null,
+                )
+              : null;
+
+          if (layer) {
+            const rotation =
+              partRotations.current.get(
+                layer,
+              );
+
+            if (rotation) {
+              rotation.targetX =
+                0;
+
+              rotation.targetY =
+                0;
+            }
+          } else {
+            resetManualRotation();
+          }
+        },
+    };
+
+    return (
+      <>
+        {/*
+          Invisible background hit plane:
+          - lets users drag the WHOLE exploded composition from empty space
+          - sits behind the actual burger so real parts still receive ray hits
+        */}
+        <mesh
+          position={[0, 0, -8]}
+          onPointerDown={(event) =>
+            startDrag(
+              event,
+              true,
+            )
+          }
+          onPointerMove={
+            moveDrag
+          }
+          onPointerUp={
+            stopDrag
+          }
+          onPointerCancel={
+            stopDrag
+          }
+          onPointerOver={() => {
+            const progress =
+              getProgress();
+
+            if (
+              isWholeBurgerInteractive(
+                progress,
+              ) &&
+              !dragRef.current.dragging
+            ) {
+              setCursor(
+                'grab',
+              );
+            }
+          }}
+          onPointerOut={() => {
+            if (
+              !dragRef.current.dragging
+            ) {
+              setCursor('');
+            }
+          }}
+          onDoubleClick={(event) => {
+            event.stopPropagation?.();
+            resetManualRotation();
+          }}
+        >
+          <planeGeometry args={[60, 60]} />
+          <meshBasicMaterial
+            transparent
+            opacity={0}
+            depthWrite={false}
+          />
+        </mesh>
+
         <group
           ref={presentationRef}
+          {...commonModelEvents}
         >
-          <group
-            ref={floatingRef}
-          >
-            <group
-              ref={centeringRef}
-            >
-              <primitive
-                object={
-                  clonedScene
-                }
-              />
+          <group ref={manualRotationRef}>
+            <group ref={floatingRef}>
+              <group ref={centeringRef}>
+                <primitive
+                  object={clonedScene}
+                />
+              </group>
             </group>
           </group>
         </group>
-      );
-    },
-  );
+      </>
+    );
+  },
+);
 
 GLBBurgerModel.displayName =
   'GLBBurgerModel';
